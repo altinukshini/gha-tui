@@ -132,6 +132,7 @@ type ActionsCacheDeletedMsg struct {
 
 // Runners messages
 type RunnersLoadedMsg struct {
-	Runners []model.Runner
-	Err     error
+	Runners   []model.Runner
+	Err       error
+	OrgFailed bool // true if org-level runners could not be fetched (permissions)
 }

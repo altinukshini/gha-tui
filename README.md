@@ -14,11 +14,12 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lipglos
 - **Live step progress** — in-progress jobs show real-time step-by-step status with auto-loading logs on completion
 - **Failed step jump** — opening a failed job's log automatically scrolls to the step that failed
 - **Run info view** — full metadata overlay with real-time refresh for in-progress runs
+- **Job info view** — per-job overlay with steps, durations, runner, and failed/running step highlights
 - **Full-text log search** — regex support, case sensitivity, job filtering, context lines
 - **In-log search** — find patterns within a single job log with match navigation
 - **Enhanced metrics** — success/failure rates, duration percentiles, queue times, usage breakdowns by event/actor/branch, slowest workflows, job-level stats
 - **Cache management** — browse, filter, sort, and delete GitHub Actions caches
-- **Runners** — view self-hosted runners with status, labels, and OS info
+- **Runners** — view self-hosted and org-shared runners with status, labels, and OS info
 - **Log caching** — disk-based cache with configurable TTL and size limits, metadata tracking
 - **Bulk operations** — delete multiple runs by workflow with parallel deletion (3 at a time)
 - **Context-aware footer** — key hints change based on focused pane/view with inline status icon legend
@@ -65,7 +66,7 @@ make build
 gh auth login
 ```
 
-The token needs the `repo` scope (or `actions:read` for read-only usage, `actions:write` for run management).
+The token needs the `repo` scope (or `actions:read` for read-only usage, `actions:write` for run management). To view organization-shared runners, also add `admin:org`: `gh auth refresh -s admin:org`.
 
 ## Usage
 
@@ -105,7 +106,8 @@ The focused pane has a purple border. Switch panes with `Tab` / `Shift+Tab`.
 
 Full-screen overlays open on top of the layout:
 - **Log View** — `Enter` on a job
-- **Info View** — `i` on a run
+- **Run Info View** — `i` on a run (left pane)
+- **Job Info View** — `i` on a job (middle pane)
 - **Search View** — `/` from runs
 - **Filter Overlay** — `S` from runs
 
@@ -132,7 +134,7 @@ Full-screen overlays open on top of the layout:
 | `f` | Filter runs (client-side) |
 | `S` | Server-side filter (workflow, event, status, branch, actor) |
 | `r` | Refresh |
-| `i` | Run info overlay |
+| `i` | Run info overlay (left pane) / Job info overlay (middle pane) |
 | `/` | Search across logs |
 | `Space` | Toggle select run |
 | `R` | Rerun all jobs |
@@ -251,7 +253,7 @@ When opening a **failed** job, the log view automatically jumps to the first fai
 
 ## Run Info View
 
-Press `i` to open a full-screen overlay showing all run metadata:
+Press `i` on a run (left pane) to open a full-screen overlay showing all run metadata:
 
 - Run number, attempt, status, conclusion
 - Actor, branch, commit SHA, event type
@@ -260,6 +262,18 @@ Press `i` to open a full-screen overlay showing all run metadata:
 - Job summary (pass/fail/running counts) and individual job list
 
 For in-progress runs, the view auto-refreshes every 3 seconds.
+
+## Job Info View
+
+Press `i` on a job (middle pane) to open a full-screen overlay showing job details:
+
+- Job name, status, conclusion, runner name
+- Started/completed timestamps and duration (or elapsed time for running jobs)
+- GitHub URL
+- Steps summary (total, passed, failed, running, skipped counts)
+- Steps table with step number, status icon, name, and duration
+- Failed steps highlighted in red with `← FAILED` marker
+- In-progress steps highlighted in blue with `← RUNNING` marker
 
 ## Search
 
@@ -351,7 +365,7 @@ The header shows cache count, total size, and current sort mode.
 
 ## Runners
 
-Press `5` to switch to the Runners tab. View self-hosted runners for the repository.
+Press `5` to switch to the Runners tab. View self-hosted runners for the repository, including organization-shared runners.
 
 Each runner shows:
 - Status indicator (green dot = online, red dot = offline)
@@ -360,6 +374,12 @@ Each runner shows:
 - Ephemeral flag
 
 Press `r` to refresh, `f` to filter by name, OS, or labels.
+
+**Note:** Organization-shared runners require the `admin:org` scope. Add it with:
+
+```bash
+gh auth refresh -s admin:org
+```
 
 ## Bulk Delete
 
@@ -408,7 +428,7 @@ internal/
     workflows/       Workflow selector with inline stats
     details/         Job details with matrix + reusable workflow grouping
     logview/         Log viewer with in-log search
-    infoview/        Run info overlay
+    infoview/        Run and job info overlays
     searchview/      Cross-log search
     filteroverlay/   Server-side filter overlay
     dashboard/       Enhanced metrics and analytics
@@ -440,7 +460,7 @@ make clean              # Remove binary and cache
 | Force cancel fails | Only works on `in_progress` runs |
 | Cache too large | Use `-cache-size 100 -cache-ttl 1h` or `rm -rf /tmp/gha-tui/` |
 | Filter won't activate | Press `f` with the correct pane focused (purple border) |
-| No runners shown | Repository may not have self-hosted runners configured |
+| No runners shown | Repo may not have runners; org-shared runners need `admin:org` scope |
 
 ## License
 

@@ -60,12 +60,13 @@ func (r runnerItem) FilterValue() string {
 
 // Model is the runners list view.
 type Model struct {
-	list    list.Model
-	runners []model.Runner
-	width   int
-	height  int
-	loading bool
-	err     error
+	list      list.Model
+	runners   []model.Runner
+	width     int
+	height    int
+	loading   bool
+	err       error
+	orgFailed bool // org-level runners could not be fetched
 }
 
 // New creates a new runners view.
@@ -98,6 +99,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.runners = msg.Runners
+		m.orgFailed = msg.OrgFailed
 		items := make([]list.Item, len(msg.Runners))
 		for i, r := range msg.Runners {
 			items[i] = runnerItem{runner: r}
@@ -126,7 +128,12 @@ func (m Model) View() string {
 		return fmt.Sprintf("\n  Error: %v", m.err)
 	}
 	if len(m.runners) == 0 {
-		return "\n  No self-hosted runners found.\n\n  This view shows self-hosted runners only.\n  GitHub-hosted runners are not listed by the API."
+		msg := "\n  No runners found.\n\n  GitHub-hosted runners are not listed by the API."
+		if m.orgFailed {
+			msg += "\n\n  " + ui.StyleWarning.Render("Org-shared runners require admin:org scope.") +
+				"\n  Run: gh auth refresh -s admin:org"
+		}
+		return msg
 	}
 
 	online := 0
@@ -141,6 +148,9 @@ func (m Model) View() string {
 	}
 	header := fmt.Sprintf("  %d runners | %d online | %d busy | r: refresh  f: filter",
 		len(m.runners), online, busy)
+	if m.orgFailed {
+		header += "  |  " + ui.StyleWarning.Render("org runners: needs admin:org scope")
+	}
 	header = ui.StyleMuted.Render(header)
 
 	return header + "\n" + m.list.View()

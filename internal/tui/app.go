@@ -500,7 +500,25 @@ func (a App) fetchRunners() tea.Cmd {
 		if err != nil {
 			return ui.RunnersLoadedMsg{Err: err}
 		}
-		return ui.RunnersLoadedMsg{Runners: resp.Runners}
+		runners := resp.Runners
+
+		// Also fetch org-level runners (shared with this repo).
+		orgFailed := false
+		if orgResp, err := a.client.ListOrgRunners(100, 1); err == nil && orgResp != nil {
+			seen := make(map[int64]bool, len(runners))
+			for _, r := range runners {
+				seen[r.ID] = true
+			}
+			for _, r := range orgResp.Runners {
+				if !seen[r.ID] {
+					runners = append(runners, r)
+				}
+			}
+		} else if err != nil {
+			orgFailed = true
+		}
+
+		return ui.RunnersLoadedMsg{Runners: runners, OrgFailed: orgFailed}
 	}
 }
 
@@ -1012,16 +1030,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, a.fetchJobLog(job.ID, job.Name))
 					}
 
-					if job.Status == model.RunStatusCompleted {
-						a.tailingJobID = 0
-						a.tailingJobName = ""
-						a.logView.SetTailing(false)
-					} else {
-						a.tailingJobID = 0
-						a.tailingJobName = ""
-						a.logView.SetTailing(false)
 					}
-				}
 			}
 
 		case "right", "l":
@@ -1136,16 +1145,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "i":
 			if a.currentView == ViewRuns && !a.logFullScreen && !a.infoFullScreen {
-				if run := a.runsView.SelectedRun(); run != nil {
-					a.infoView.SetRun(run)
-					a.infoFullScreen = true
-					a.propagateSize()
-					cmds = append(cmds, a.fetchJobs(run.ID))
-					if run.Status != model.RunStatusCompleted {
-						if a.autoRefreshRunID == 0 {
-							a.infoStartedRefresh = true
-							a.autoRefreshRunID = run.ID
-							cmds = append(cmds, a.scheduleJobsRefresh(run.ID))
+				if a.focusedPane == PaneMiddle {
+					if job := a.detailsView.SelectedJob(); job != nil {
+						a.infoView.SetJob(job)
+						a.infoFullScreen = true
+						a.propagateSize()
+					}
+				} else {
+					if run := a.runsView.SelectedRun(); run != nil {
+						a.infoView.SetRun(run)
+						a.infoFullScreen = true
+						a.propagateSize()
+						cmds = append(cmds, a.fetchJobs(run.ID))
+						if run.Status != model.RunStatusCompleted {
+							if a.autoRefreshRunID == 0 {
+								a.infoStartedRefresh = true
+								a.autoRefreshRunID = run.ID
+								cmds = append(cmds, a.scheduleJobsRefresh(run.ID))
+							}
 						}
 					}
 				}
@@ -1472,7 +1489,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					isExit := keyMsg.String() == "esc" || keyMsg.String() == "backspace" || keyMsg.String() == "delete"
 					if isExit {
 						a.infoFullScreen = false
-						a.focusedPane = PaneLeft
+						if a.infoView.IsShowingJob() {
+							a.focusedPane = PaneMiddle
+						} else {
+							a.focusedPane = PaneLeft
+						}
 						if a.infoStartedRefresh {
 							a.autoRefreshRunID = 0
 							a.infoStartedRefresh = false
@@ -1889,7 +1910,7 @@ func (a App) contextHints() string {
 			ui.StatusIcon("in_progress"),
 			ui.StatusIcon("skipped"),
 		)
-		return legend + "  |  enter:view log  /:search  j/k:navigate  tab:pane  ?:help  esc:back"
+		return legend + "  |  enter:view log  i:info  j/k:navigate  tab:pane  ?:help  esc:back"
 	}
 
 	switch a.currentView {

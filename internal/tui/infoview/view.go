@@ -15,12 +15,14 @@ import (
 )
 
 type Model struct {
-	run      *model.Run
-	jobs     []model.Job
-	viewport viewport.Model
-	width    int
-	height   int
-	ready    bool
+	run        *model.Run
+	jobs       []model.Job
+	job        *model.Job
+	showingJob bool
+	viewport   viewport.Model
+	width      int
+	height     int
+	ready      bool
 }
 
 func New() Model {
@@ -29,9 +31,26 @@ func New() Model {
 
 func (m *Model) SetRun(run *model.Run) {
 	m.run = run
+	m.showingJob = false
 	if m.ready {
 		m.viewport.SetContent(m.render())
 	}
+}
+
+func (m *Model) SetJob(job *model.Job) {
+	m.job = job
+	m.showingJob = true
+	if m.ready {
+		m.viewport.SetContent(m.render())
+	}
+}
+
+func (m Model) Job() *model.Job {
+	return m.job
+}
+
+func (m Model) IsShowingJob() bool {
+	return m.showingJob
 }
 
 func (m *Model) SetJobs(jobs []model.Job) {
@@ -59,7 +78,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if !m.ready {
 			m.viewport = viewport.New(wsm.Width, wsm.Height-headerH)
 			m.ready = true
-			if m.run != nil {
+			if m.run != nil || m.job != nil {
 				m.viewport.SetContent(m.render())
 			}
 		} else {
@@ -74,12 +93,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	if m.run == nil {
-		return "\n  Select a run and press 'i' to view info"
+	if m.showingJob {
+		if m.job == nil {
+			return "\n  Select a job and press 'i' to view info"
+		}
+	} else {
+		if m.run == nil {
+			return "\n  Select a run and press 'i' to view info"
+		}
 	}
 
 	pct := m.viewport.ScrollPercent() * 100
-	header := fmt.Sprintf(" Run #%d Info  %3.0f%%", m.run.RunNumber, pct)
+	var header string
+	if m.showingJob {
+		header = fmt.Sprintf(" Job Info  %3.0f%%", pct)
+	} else {
+		header = fmt.Sprintf(" Run #%d Info  %3.0f%%", m.run.RunNumber, pct)
+	}
 	hints := lipgloss.NewStyle().Foreground(ui.ColorMuted).Render(
 		"  j/k:scroll  g/G:top/bot  PgUp/Dn:page  esc:back")
 	headerLine := lipgloss.NewStyle().Bold(true).
@@ -90,6 +120,13 @@ func (m Model) View() string {
 }
 
 func (m Model) render() string {
+	if m.showingJob {
+		return m.renderJob()
+	}
+	return m.renderRun()
+}
+
+func (m Model) renderRun() string {
 	if m.run == nil {
 		return "  No run selected"
 	}
@@ -209,6 +246,153 @@ func (m Model) render() string {
 			}
 			b.WriteString(fmt.Sprintf("  %s %-40s %8s  %d steps\n",
 				jIcon, j.Name, durStr, len(j.Steps)))
+		}
+	}
+
+	return b.String()
+}
+
+func (m Model) renderJob() string {
+	if m.job == nil {
+		return "  No job selected"
+	}
+
+	j := m.job
+	bold := lipgloss.NewStyle().Bold(true)
+	label := lipgloss.NewStyle().Foreground(ui.ColorMuted).Width(16)
+	value := lipgloss.NewStyle().Foreground(lipgloss.Color("#F9FAFB"))
+
+	row := func(l, v string) string {
+		return "  " + label.Render(l) + value.Render(v) + "\n"
+	}
+
+	var b strings.Builder
+
+	// Title
+	b.WriteString("\n")
+	b.WriteString("  " + bold.Render(j.Name) + "\n")
+	b.WriteString("\n")
+
+	// Status with colored icon
+	icon := ui.StatusIcon(string(j.Conclusion))
+	statusStr := string(j.Status)
+	if j.Status == model.RunStatusInProgress {
+		icon = ui.StatusIcon("in_progress")
+		statusStr = "in_progress"
+	} else if j.Status == model.RunStatusQueued {
+		icon = ui.StatusIcon("queued")
+		statusStr = "queued"
+	}
+	conclusionPart := ""
+	if j.Conclusion != "" {
+		conclusionPart = " / " + ui.ConclusionStyle(string(j.Conclusion)).Render(string(j.Conclusion))
+	}
+
+	b.WriteString("  " + label.Render("Status") + icon + " " + value.Render(statusStr) + conclusionPart + "\n")
+	if j.RunnerName != "" {
+		b.WriteString(row("Runner", j.RunnerName))
+	}
+	b.WriteString("\n")
+
+	// Timestamps
+	b.WriteString("  " + bold.Render("Timestamps") + "\n\n")
+	b.WriteString(row("Started", formatTime(j.StartedAt)))
+	b.WriteString(row("Completed", formatTime(j.CompletedAt)))
+	dur := j.Duration().Truncate(time.Second)
+	if dur > 0 {
+		b.WriteString(row("Duration", dur.String()))
+	} else if j.Status == model.RunStatusInProgress && !j.StartedAt.IsZero() {
+		elapsed := time.Since(j.StartedAt).Truncate(time.Second)
+		b.WriteString(row("Elapsed", elapsed.String()))
+	} else {
+		b.WriteString(row("Duration", "-"))
+	}
+	b.WriteString("\n")
+
+	// URL
+	if j.HTMLURL != "" {
+		b.WriteString(row("URL", j.HTMLURL))
+		b.WriteString("\n")
+	}
+
+	// Steps
+	b.WriteString("  " + bold.Render("Steps") + "\n\n")
+	if len(j.Steps) == 0 {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(ui.ColorMuted).Render("No steps available") + "\n")
+	} else {
+		// Steps summary
+		total := len(j.Steps)
+		var passed, failed, cancelled, running, skipped, other int
+		for _, s := range j.Steps {
+			switch {
+			case s.Status == model.RunStatusInProgress:
+				running++
+			case s.Conclusion == model.ConclusionSuccess:
+				passed++
+			case s.Conclusion == model.ConclusionFailure:
+				failed++
+			case s.Conclusion == model.ConclusionCancelled:
+				cancelled++
+			case s.Conclusion == model.ConclusionSkipped:
+				skipped++
+			default:
+				other++
+			}
+		}
+
+		parts := []string{fmt.Sprintf("%d total", total)}
+		if passed > 0 {
+			parts = append(parts, ui.StyleSuccess.Render(fmt.Sprintf("%d passed", passed)))
+		}
+		if failed > 0 {
+			parts = append(parts, ui.StyleFailure.Render(fmt.Sprintf("%d failed", failed)))
+		}
+		if running > 0 {
+			parts = append(parts, ui.StyleInfo.Render(fmt.Sprintf("%d running", running)))
+		}
+		if cancelled > 0 {
+			parts = append(parts, ui.StyleWarning.Render(fmt.Sprintf("%d cancelled", cancelled)))
+		}
+		if skipped > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(ui.ColorMuted).Render(fmt.Sprintf("%d skipped", skipped)))
+		}
+		if other > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(ui.ColorMuted).Render(fmt.Sprintf("%d other", other)))
+		}
+		b.WriteString("  " + strings.Join(parts, ", ") + "\n\n")
+
+		// Steps table
+		for _, s := range j.Steps {
+			sIcon := ui.StatusIcon(string(s.Conclusion))
+			if s.Status == model.RunStatusInProgress {
+				sIcon = ui.StatusIcon("in_progress")
+			} else if s.Status == model.RunStatusQueued {
+				sIcon = ui.StatusIcon("queued")
+			}
+
+			sDur := ""
+			if !s.CompletedAt.IsZero() && !s.StartedAt.IsZero() {
+				d := s.CompletedAt.Sub(s.StartedAt).Truncate(time.Second)
+				sDur = d.String()
+			} else if s.Status == model.RunStatusInProgress && !s.StartedAt.IsZero() {
+				d := time.Since(s.StartedAt).Truncate(time.Second)
+				sDur = d.String()
+			} else {
+				sDur = "-"
+			}
+
+			stepName := s.Name
+			suffix := ""
+			if s.Conclusion == model.ConclusionFailure {
+				stepName = ui.StyleFailure.Render(s.Name)
+				suffix = ui.StyleFailure.Render("  ← FAILED")
+			} else if s.Status == model.RunStatusInProgress {
+				stepName = ui.StyleInfo.Render(s.Name)
+				suffix = ui.StyleInfo.Render("  ← RUNNING")
+			}
+
+			b.WriteString(fmt.Sprintf("  %2d  %s  %-40s %8s%s\n",
+				s.Number, sIcon, stepName, sDur, suffix))
 		}
 	}
 
