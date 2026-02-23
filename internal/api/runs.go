@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/altin/gh-actions-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/model"
 )
 
 type RunsFilter struct {

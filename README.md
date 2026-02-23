@@ -33,24 +33,24 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lipglos
 
 ### Download a binary
 
-Grab the latest release from the [Releases](https://github.com/altinukshini/gh-actions-tui/releases) page. Binaries are available for Linux, macOS, and Windows (amd64 and arm64).
+Grab the latest release from the [Releases](https://github.com/altinukshini/gha-tui/releases) page. Binaries are available for Linux, macOS, and Windows (amd64 and arm64).
 
 ```bash
 # Example: macOS arm64
-curl -sL https://github.com/altinukshini/gh-actions-tui/releases/latest/download/gha-tui-v0.1.0-darwin-arm64.tar.gz | tar xz
+curl -sL https://github.com/altinukshini/gha-tui/releases/latest/download/gha-tui-v0.1.0-darwin-arm64.tar.gz | tar xz
 sudo mv gha-tui /usr/local/bin/
 ```
 
 ### Go install
 
 ```bash
-go install github.com/altinukshini/gh-actions-tui/cmd/gha-tui@latest
+go install github.com/altinukshini/gha-tui/cmd/gha-tui@latest
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/altinukshini/gh-actions-tui.git
+git clone https://github.com/altinukshini/gha-tui.git
 cd gh-actions-tui
 make build
 # Binary: ./gha-tui

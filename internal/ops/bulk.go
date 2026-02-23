@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/altin/gh-actions-tui/internal/api"
-	"github.com/altin/gh-actions-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/api"
+	"github.com/altinukshini/gha-tui/internal/model"
 )
 
 type BulkDeleteFilter struct {

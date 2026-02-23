@@ -10,10 +10,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/altin/gh-actions-tui/internal/api"
-	"github.com/altin/gh-actions-tui/internal/cache"
-	"github.com/altin/gh-actions-tui/internal/config"
-	"github.com/altin/gh-actions-tui/internal/tui"
+	"github.com/altinukshini/gha-tui/internal/api"
+	"github.com/altinukshini/gha-tui/internal/cache"
+	"github.com/altinukshini/gha-tui/internal/config"
+	"github.com/altinukshini/gha-tui/internal/tui"
 )
 
 var version = "dev"

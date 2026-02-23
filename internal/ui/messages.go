@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"github.com/altin/gh-actions-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/model"
 )
 
 // Data fetched messages

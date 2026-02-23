@@ -3,7 +3,7 @@ package api
 import (
 	"fmt"
 
-	"github.com/altin/gh-actions-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/model"
 )
 
 // ListRunners returns the repository's GitHub Actions runners.

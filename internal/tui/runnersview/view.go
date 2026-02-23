@@ -8,8 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/altin/gh-actions-tui/internal/model"
-	"github.com/altin/gh-actions-tui/internal/ui"
+	"github.com/altinukshini/gha-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/ui"
 )
 
 type runnerItem struct {

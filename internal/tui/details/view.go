@@ -12,8 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/altin/gh-actions-tui/internal/model"
-	"github.com/altin/gh-actions-tui/internal/ui"
+	"github.com/altinukshini/gha-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/ui"
 )
 
 // matrixRe matches patterns like "build (ubuntu-latest, 18, debug)"

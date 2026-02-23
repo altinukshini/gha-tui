@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/altin/gh-actions-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/model"
 )
 
 func (c *Client) ListWorkflows(perPage, page int) (*model.WorkflowsResponse, error) {

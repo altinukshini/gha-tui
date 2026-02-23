@@ -3,7 +3,7 @@ package tui
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/altin/gh-actions-tui/internal/ui"
+	"github.com/altinukshini/gha-tui/internal/ui"
 )
 
 func RenderStatusBar(status, hints string, width int) string {

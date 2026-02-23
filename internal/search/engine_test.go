@@ -3,7 +3,7 @@ package search
 import (
 	"testing"
 
-	"github.com/altin/gh-actions-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/model"
 )
 
 func TestSearchPlainText(t *testing.T) {

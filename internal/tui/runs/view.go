@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/altin/gh-actions-tui/internal/model"
-	"github.com/altin/gh-actions-tui/internal/ui"
+	"github.com/altinukshini/gha-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/ui"
 )
 
 // NeedNextPageMsg is emitted when the cursor is at the bottom and user presses down.

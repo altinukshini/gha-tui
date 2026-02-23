@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/altin/gh-actions-tui/internal/ui"
+	"github.com/altinukshini/gha-tui/internal/ui"
 )
 
 func RenderHeader(repo string, rateRemaining, rateLimit int, width int) string {

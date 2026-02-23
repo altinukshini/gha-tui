@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/altin/gh-actions-tui/internal/model"
+	"github.com/altinukshini/gha-tui/internal/model"
 )
 
 func TestFilterRunsForDeletion(t *testing.T) {

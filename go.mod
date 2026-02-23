@@ -1,4 +1,4 @@
-module github.com/altin/gh-actions-tui
+module github.com/altinukshini/gha-tui
 
 go 1.25.0
 
