@@ -15,12 +15,17 @@ import (
 )
 
 type cacheItem struct {
-	entry model.ActionsCache
+	entry    model.ActionsCache
+	selected bool
 }
 
 func (c cacheItem) Title() string {
+	mark := " "
+	if c.selected {
+		mark = ui.StyleWarning.Render("● ")
+	}
 	size := ui.StyleWarning.Render(formatSize(c.entry.SizeInBytes))
-	return fmt.Sprintf("%s  %s", c.entry.Key, size)
+	return fmt.Sprintf("%s%s  %s", mark, c.entry.Key, size)
 }
 
 func (c cacheItem) Description() string {
@@ -78,6 +83,7 @@ func (s SortMode) String() string {
 type Model struct {
 	list       list.Model
 	entries    []model.ActionsCache
+	selected   map[int64]bool
 	totalCount int
 	sortMode   SortMode
 	totalSize  int64
@@ -101,7 +107,7 @@ func New() Model {
 	l.KeyMap.Filter = key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter"))
 	l.DisableQuitKeybindings()
 
-	return Model{list: l, loading: true}
+	return Model{list: l, selected: make(map[int64]bool), loading: true}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -116,6 +122,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.entries = msg.Caches
 		m.totalCount = msg.TotalCount
+		m.selected = make(map[int64]bool)
 		m.totalSize = 0
 		for _, e := range m.entries {
 			m.totalSize += e.SizeInBytes
@@ -131,6 +138,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.list.SetSize(msg.Width, msg.Height-1)
 
 	case tea.KeyMsg:
+		if msg.String() == " " && !m.IsFiltering() {
+			if item, ok := m.list.SelectedItem().(cacheItem); ok {
+				id := item.entry.ID
+				if m.selected[id] {
+					delete(m.selected, id)
+				} else {
+					m.selected[id] = true
+				}
+				cmd := m.list.SetItems(m.buildItems())
+				return m, cmd
+			}
+			return m, nil
+		}
 		if msg.String() == "s" && !m.IsFiltering() {
 			m.sortMode = (m.sortMode + 1) % 3
 			m.sortEntries()
@@ -219,9 +239,30 @@ func (m *Model) sortEntries() {
 func (m Model) buildItems() []list.Item {
 	items := make([]list.Item, len(m.entries))
 	for i, e := range m.entries {
-		items[i] = cacheItem{entry: e}
+		items[i] = cacheItem{entry: e, selected: m.selected[e.ID]}
 	}
 	return items
+}
+
+// SelectedCaches returns the IDs of all multi-selected caches.
+func (m Model) SelectedCaches() []int64 {
+	var ids []int64
+	for id := range m.selected {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// SelectionCount returns the number of selected caches.
+func (m Model) SelectionCount() int {
+	return len(m.selected)
+}
+
+// ClearSelection clears all selected caches.
+func (m *Model) ClearSelection() {
+	for k := range m.selected {
+		delete(m.selected, k)
+	}
 }
 
 // formatSize formats a byte count into a human-readable string (KB, MB, GB).

@@ -155,11 +155,12 @@ Full-screen overlays open on top of the layout:
 
 | Key | Action |
 |-----|--------|
-| `f` | Filter caches |
+| `Space` | Toggle select cache |
+| `d` | Delete cache (or all selected) |
+| `x` | Clear all caches |
 | `s` | Cycle sort mode (last used / created / size) |
 | `r` | Refresh caches |
-| `d` | Delete selected cache |
-| `x` | Clear all caches |
+| `f` | Filter caches |
 
 ### Runners
 
@@ -340,7 +341,8 @@ Each entry shows: cache key, size, branch, creation date, and last used time.
 - **Filter** — press `f` to filter by cache key or branch ref
 - **Sort** — press `s` to cycle sort modes: last used, created, or size
 - **Refresh** — press `r` to reload caches from the API
-- **Delete** — press `d` to delete a single cache, `x` to clear all caches
+- **Select** — press `Space` to multi-select caches, then `d` to bulk delete selected
+- **Delete** — press `d` to delete the focused cache (or all selected), `x` to clear all caches
 
 The header shows cache count, total size, and current sort mode.
 

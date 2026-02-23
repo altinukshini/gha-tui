@@ -376,6 +376,41 @@ func (a App) deleteActionsCache(cacheID int64) tea.Cmd {
 	}
 }
 
+func (a App) deleteSelectedCaches(ids []int64) tea.Cmd {
+	client := a.client
+	return func() tea.Msg {
+		var mu sync.Mutex
+		var lastErr error
+		deleted := 0
+		sem := make(chan struct{}, 3)
+		var wg sync.WaitGroup
+		for _, id := range ids {
+			wg.Add(1)
+			go func(id int64) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				if err := client.DeleteActionsCache(id); err != nil {
+					mu.Lock()
+					lastErr = err
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					deleted++
+					mu.Unlock()
+				}
+			}(id)
+		}
+		wg.Wait()
+		if lastErr != nil {
+			return ui.ActionsCacheDeletedMsg{
+				Err: fmt.Errorf("deleted %d/%d caches, last error: %w", deleted, len(ids), lastErr),
+			}
+		}
+		return ui.ActionsCacheDeletedMsg{CacheID: 0}
+	}
+}
+
 func (a App) deleteAllActionsCaches() tea.Cmd {
 	client := a.client
 	return func() tea.Msg {
@@ -644,6 +679,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.status = fmt.Sprintf("Deleting %d runs...", len(ids))
 				a.runsView.ClearSelection()
 				cmds = append(cmds, a.doBulkDeleteByIDs(ids))
+			case "delete-selected-caches":
+				ids := result.Data.([]int64)
+				a.status = fmt.Sprintf("Deleting %d caches...", len(ids))
+				a.cacheView.ClearSelection()
+				cmds = append(cmds, a.deleteSelectedCaches(ids))
 			case "delete-cache-entry":
 				if entry := a.cacheView.SelectedEntry(); entry != nil {
 					a.status = "Deleting cache..."
@@ -814,6 +854,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.currentView = ViewRuns
 					a.focusedPane = PaneLeft
 					a.status = a.runsPageStatus()
+					a.propagateSize()
 				}
 			case "2":
 				if a.currentView != ViewWorkflows {
@@ -1010,7 +1051,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					)
 				}
 			} else if a.currentView == ViewCache {
-				if entry := a.cacheView.SelectedEntry(); entry != nil {
+				if count := a.cacheView.SelectionCount(); count > 0 {
+					a.confirmDialog = confirm.New(
+						"Delete Selected Caches",
+						fmt.Sprintf("Delete %d selected caches? This cannot be undone.", count),
+						"delete-selected-caches", a.cacheView.SelectedCaches(),
+					)
+				} else if entry := a.cacheView.SelectedEntry(); entry != nil {
 					keyPreview := entry.Key
 					if len(keyPreview) > 60 {
 						keyPreview = keyPreview[:57] + "..."
@@ -1415,18 +1462,39 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			a.workflowsView, cmd = a.workflowsView.Update(msg)
 			cmds = append(cmds, cmd)
+			// Forward runs data messages so they're not lost when on another tab
+			switch msg.(type) {
+			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+				a.runsView, cmd = a.runsView.Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		case ViewMetrics:
 			var cmd tea.Cmd
 			a.dashboardView, cmd = a.dashboardView.Update(msg)
 			cmds = append(cmds, cmd)
+			switch msg.(type) {
+			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+				a.runsView, cmd = a.runsView.Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		case ViewCache:
 			var cmd tea.Cmd
 			a.cacheView, cmd = a.cacheView.Update(msg)
 			cmds = append(cmds, cmd)
+			switch msg.(type) {
+			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+				a.runsView, cmd = a.runsView.Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		case ViewRunners:
 			var cmd tea.Cmd
 			a.runnersView, cmd = a.runnersView.Update(msg)
 			cmds = append(cmds, cmd)
+			switch msg.(type) {
+			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+				a.runsView, cmd = a.runsView.Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 
@@ -1714,7 +1782,7 @@ func (a App) contextHints() string {
 	case ViewMetrics:
 		return "[:prev window  ]:next window  j/k:scroll  ?:help"
 	case ViewCache:
-		return "r:refresh  s:sort  d:delete  x:clear all  f:filter  ?:help"
+		return "space:select  d:delete  x:clear all  s:sort  r:refresh  f:filter  ?:help"
 	case ViewRunners:
 		return "r:refresh  f:filter  ?:help"
 	}
