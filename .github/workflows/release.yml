@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Test
+        run: go test ./... -v -count=1
+
+      - name: Build binaries
+        run: |
+          version="${GITHUB_REF#refs/tags/}"
+          ldflags="-s -w -X main.version=${version}"
+
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+
+          mkdir -p dist
+
+          for platform in "${platforms[@]}"; do
+            goos="${platform%/*}"
+            goarch="${platform#*/}"
+            output="gha-tui"
+            if [ "$goos" = "windows" ]; then
+              output="gha-tui.exe"
+            fi
+
+            echo "Building ${goos}/${goarch}..."
+            GOOS=$goos GOARCH=$goarch go build -ldflags "$ldflags" -o "${output}" ./cmd/gha-tui
+
+            archive="gha-tui-${version}-${goos}-${goarch}"
+            if [ "$goos" = "windows" ]; then
+              zip "dist/${archive}.zip" "${output}"
+            else
+              tar czf "dist/${archive}.tar.gz" "${output}"
+            fi
+            rm -f "${output}"
+          done
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
