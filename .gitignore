@@ -1,0 +1,33 @@
+# Binaries
+/gha-tui
+/bin/
+/dist/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Cache
+*.db
+*.sqlite
+/cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Worktrees
+.worktrees/
+
+# OS
+.DS_Store
+Thumbs.db
