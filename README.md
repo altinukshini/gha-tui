@@ -12,6 +12,7 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lipglos
 - **Run management** — rerun, cancel, force-cancel, and delete workflow runs
 - **Job inspection** — matrix-aware job grouping with reusable workflow nesting, step counts, duration tracking
 - **Live step progress** — in-progress jobs show real-time step-by-step status with auto-loading logs on completion
+- **Failed step jump** — opening a failed job's log automatically scrolls to the step that failed
 - **Run info view** — full metadata overlay with real-time refresh for in-progress runs
 - **Full-text log search** — regex support, case sensitivity, job filtering, context lines
 - **In-log search** — find patterns within a single job log with match navigation
@@ -244,7 +245,9 @@ Each group and sub-group shows an aggregate status icon (in-progress > failure >
 
 ### Live Step Progress
 
-Opening an in-progress job shows a real-time step-by-step progress view instead of logs (GitHub's API does not expose logs for running jobs). Each step displays its status icon, name, and elapsed time. The view polls every 3 seconds and automatically fetches the full log once the job completes.
+Opening an in-progress job shows a real-time step-by-step progress view instead of logs (GitHub's API does not expose logs for running jobs). Each step displays its status icon, name, and elapsed time. The view polls every 1.5 seconds and automatically fetches the full log once the job completes.
+
+When opening a **failed** job, the log view automatically jumps to the first failed step so you don't have to scroll through the entire log.
 
 ## Run Info View
 
@@ -378,7 +381,7 @@ make clean
 
 ## Auto-Refresh
 
-When viewing an in-progress run, jobs and run metadata are polled every 3 seconds. Opening an in-progress job shows live step progress (also polled every 3 seconds) and automatically loads the full log when the job completes. Polling stops when the run completes or you navigate away.
+The runs list auto-refreshes every 5 seconds so status changes appear without pressing `r`. When viewing an in-progress run, jobs and run metadata are polled every 3 seconds. Opening an in-progress job shows live step progress (polled every 1.5 seconds) and automatically loads the full log when the job completes. Polling stops when the run completes or you navigate away.
 
 ## Context-Aware Footer
 
@@ -431,6 +434,7 @@ make clean              # Remove binary and cache
 | Problem | Solution |
 |---------|----------|
 | "Auth error" on startup | Run `gh auth login` and `gh auth status` |
+| "not found or not accessible" | Check the `-R owner/repo` flag — repo must exist and your token needs access |
 | No workflows appear | Check `.github/workflows/` exists in the repo |
 | Logs stuck on "Loading..." | Check rate limit in header; wait if `0/5000` |
 | Force cancel fails | Only works on `in_progress` runs |

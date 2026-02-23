@@ -201,6 +201,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.list.Select(0)
 		return m, cmd
 
+	case ui.RunsRefreshedMsg:
+		if msg.Err != nil {
+			return m, nil
+		}
+		m.runs = msg.Runs
+		prevIdx := m.list.Index()
+		items := make([]list.Item, len(msg.Runs))
+		for i, r := range msg.Runs {
+			items[i] = runItem{run: r}
+		}
+		cmd := m.list.SetItems(items)
+		if prevIdx < len(items) {
+			m.list.Select(prevIdx)
+		}
+		return m, cmd
+
 	case tea.KeyMsg:
 		// Ensure the filter key binding is enabled whenever items exist.
 		// The list's updateKeybindings can disable it (e.g. after SetSize

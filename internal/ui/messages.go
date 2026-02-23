@@ -71,6 +71,14 @@ type DashboardDataMsg struct {
 	Err        error
 }
 
+type RunsTickMsg struct{}
+
+type RunsRefreshedMsg struct {
+	Runs       []model.Run
+	TotalCount int
+	Err        error
+}
+
 type JobsTickMsg struct {
 	RunID int64
 }

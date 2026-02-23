@@ -65,6 +65,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := client.CheckRepo(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	cacheDir := filepath.Join(os.TempDir(), "gha-tui", "logs")
 	logCache, err := cache.NewLogCache(cacheDir, *cacheSizeMB, *cacheTTL)
 	if err != nil {

@@ -99,6 +99,9 @@ type App struct {
 	tailingJobID   int64
 	tailingJobName string
 
+	// Track the currently viewed job for failed-step jump
+	viewingJob *model.Job
+
 	showHelp           bool
 	logFullScreen      bool
 	infoFullScreen     bool
@@ -168,6 +171,33 @@ func (a App) fetchRuns() tea.Cmd {
 			return ui.RunsLoadedMsg{Err: err}
 		}
 		return ui.RunsLoadedMsg{Runs: resp.Runs, TotalCount: resp.TotalCount}
+	}
+}
+
+func (a App) refreshCurrentRuns() tea.Cmd {
+	page := a.runsPage
+	filter := api.RunsFilter{PerPage: runsPerPage, Page: page}
+	if a.runsFilter.WorkflowID != 0 {
+		filter.WorkflowID = a.runsFilter.WorkflowID
+	}
+	if a.runsFilter.Event != "" {
+		filter.Event = a.runsFilter.Event
+	}
+	if a.runsFilter.Status != "" {
+		filter.Status = a.runsFilter.Status
+	}
+	if a.runsFilter.Branch != "" {
+		filter.Branch = a.runsFilter.Branch
+	}
+	if a.runsFilter.Actor != "" {
+		filter.Actor = a.runsFilter.Actor
+	}
+	return func() tea.Msg {
+		resp, err := a.client.ListRuns(filter)
+		if err != nil {
+			return ui.RunsRefreshedMsg{Err: err}
+		}
+		return ui.RunsRefreshedMsg{Runs: resp.Runs, TotalCount: resp.TotalCount}
 	}
 }
 
@@ -474,6 +504,12 @@ func (a App) fetchRunners() tea.Cmd {
 	}
 }
 
+func (a App) scheduleRunsRefresh() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return ui.RunsTickMsg{}
+	})
+}
+
 func (a App) scheduleJobsRefresh(runID int64) tea.Cmd {
 	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 		return ui.JobsTickMsg{RunID: runID}
@@ -481,7 +517,7 @@ func (a App) scheduleJobsRefresh(runID int64) tea.Cmd {
 }
 
 func (a App) scheduleLogRefresh(jobID int64, jobName string) tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(1500*time.Millisecond, func(t time.Time) tea.Msg {
 		return ui.LogTailTickMsg{JobID: jobID, JobName: jobName}
 	})
 }
@@ -945,24 +981,33 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					if job.Status != model.RunStatusCompleted {
-						// In-progress job: show step progress, start tailing
-						a.logView.SetContent(job.Name, "\n  Loading step progress...")
+						// In-progress job: show step progress from what we have, start tailing
+						a.logView.SetContent(job.Name, renderStepProgress(job))
 						a.logFullScreen = true
 						a.propagateSize()
 						a.tailingJobID = job.ID
 						a.tailingJobName = job.Name
 						a.logView.SetTailing(true)
+						a.viewingJob = job
 						a.status = fmt.Sprintf("Watching %s...", job.Name)
 						cmds = append(cmds, a.checkJobStatus(job.ID, job.Name))
 					} else if ok {
 						a.logView.SetContent(job.Name, content)
 						a.logFullScreen = true
 						a.propagateSize()
+						a.viewingJob = job
+						// Jump to failed step if the job failed
+						if stepName := firstFailedStepName(job); stepName != "" {
+							if line := findFailedStepLine(content, stepName); line > 0 {
+								a.logView.GotoLine(line)
+							}
+						}
 					} else {
 						// Completed job, no cached log -- fetch via per-job API.
 						a.logView.SetLoading()
 						a.logFullScreen = true
 						a.propagateSize()
+						a.viewingJob = job
 						a.status = fmt.Sprintf("Fetching log for %s...", job.Name)
 						cmds = append(cmds, a.fetchJobLog(job.ID, job.Name))
 					}
@@ -1189,6 +1234,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.runsLoading = false
 			a.status = fmt.Sprintf("Error: %v", msg.Err)
 		}
+		cmds = append(cmds, a.scheduleRunsRefresh())
 
 	case ui.RunsPageMsg:
 		a.runsLoading = false
@@ -1200,6 +1246,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.status = fmt.Sprintf("Error loading page: %v", msg.Err)
 		}
+		cmds = append(cmds, a.scheduleRunsRefresh())
 
 	case ui.JobsLoadedMsg:
 		if msg.Err == nil {
@@ -1233,6 +1280,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status = fmt.Sprintf("Error loading jobs: %v", msg.Err)
 		}
 
+	case ui.RunsTickMsg:
+		if a.currentView == ViewRuns && !a.runsLoading {
+			cmds = append(cmds, a.refreshCurrentRuns())
+		} else {
+			// Not on runs tab right now, keep ticking
+			cmds = append(cmds, a.scheduleRunsRefresh())
+		}
+
+	case ui.RunsRefreshedMsg:
+		if msg.Err == nil {
+			a.runsTotalCount = msg.TotalCount
+			a.runsHasMore = len(msg.Runs) >= runsPerPage
+		}
+		cmds = append(cmds, a.scheduleRunsRefresh())
+
 	case ui.JobsTickMsg:
 		if a.autoRefreshRunID == msg.RunID && a.currentView == ViewRuns {
 			cmds = append(cmds, a.fetchJobs(msg.RunID))
@@ -1248,20 +1310,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ui.JobTailStatusMsg:
 		if a.tailingJobID == msg.JobID {
-			if msg.Completed {
-				// Job done — fetch actual logs and stop tailing
+			if msg.Err != nil {
+				a.logView.UpdateContent(fmt.Sprintf("\n  Error fetching job status: %v\n\n  Retrying...", msg.Err))
+				a.status = fmt.Sprintf("Error watching %s, retrying...", msg.JobName)
+				cmds = append(cmds, a.scheduleLogRefresh(msg.JobID, msg.JobName))
+			} else if msg.Completed {
+				// Job done — update viewingJob with final step data, fetch logs
 				a.tailingJobID = 0
 				a.tailingJobName = ""
 				a.logView.SetTailing(false)
 				a.logView.SetLoading()
+				if msg.Job != nil {
+					a.viewingJob = msg.Job
+				}
 				a.status = fmt.Sprintf("Job %s completed — loading logs...", msg.JobName)
 				cmds = append(cmds, a.fetchJobLog(msg.JobID, msg.JobName))
 			} else if msg.Job != nil {
 				// Still running — render step progress and schedule next tick
 				a.logView.UpdateContent(renderStepProgress(msg.Job))
 				a.status = fmt.Sprintf("Watching %s...", msg.JobName)
-				cmds = append(cmds, a.scheduleLogRefresh(msg.JobID, msg.JobName))
-			} else {
 				cmds = append(cmds, a.scheduleLogRefresh(msg.JobID, msg.JobName))
 			}
 		}
@@ -1283,6 +1350,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// If we're in full-screen log view waiting for this, show it
 			if a.logFullScreen {
 				a.logView.SetContent(msg.JobName, msg.Content)
+				// Jump to failed step if the job failed
+				if a.viewingJob != nil && a.viewingJob.Name == msg.JobName {
+					if stepName := firstFailedStepName(a.viewingJob); stepName != "" {
+						if line := findFailedStepLine(msg.Content, stepName); line > 0 {
+							a.logView.GotoLine(line)
+						}
+					}
+				}
 			}
 			a.status = fmt.Sprintf("Log loaded for %s", msg.JobName)
 		} else {
@@ -1367,6 +1442,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Stop any active tailing
 						a.tailingJobID = 0
 						a.tailingJobName = ""
+						a.viewingJob = nil
 						a.logView.SetTailing(false)
 						if a.cameFromSearch {
 							a.cameFromSearch = false
@@ -1464,7 +1540,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 			// Forward runs data messages so they're not lost when on another tab
 			switch msg.(type) {
-			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+			case ui.RunsLoadedMsg, ui.RunsPageMsg, ui.RunsRefreshedMsg:
 				a.runsView, cmd = a.runsView.Update(msg)
 				cmds = append(cmds, cmd)
 			}
@@ -1473,7 +1549,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.dashboardView, cmd = a.dashboardView.Update(msg)
 			cmds = append(cmds, cmd)
 			switch msg.(type) {
-			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+			case ui.RunsLoadedMsg, ui.RunsPageMsg, ui.RunsRefreshedMsg:
 				a.runsView, cmd = a.runsView.Update(msg)
 				cmds = append(cmds, cmd)
 			}
@@ -1482,7 +1558,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cacheView, cmd = a.cacheView.Update(msg)
 			cmds = append(cmds, cmd)
 			switch msg.(type) {
-			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+			case ui.RunsLoadedMsg, ui.RunsPageMsg, ui.RunsRefreshedMsg:
 				a.runsView, cmd = a.runsView.Update(msg)
 				cmds = append(cmds, cmd)
 			}
@@ -1491,7 +1567,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.runnersView, cmd = a.runnersView.Update(msg)
 			cmds = append(cmds, cmd)
 			switch msg.(type) {
-			case ui.RunsLoadedMsg, ui.RunsPageMsg:
+			case ui.RunsLoadedMsg, ui.RunsPageMsg, ui.RunsRefreshedMsg:
 				a.runsView, cmd = a.runsView.Update(msg)
 				cmds = append(cmds, cmd)
 			}
@@ -1694,6 +1770,46 @@ func (a App) renderTabs() string {
 	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, runsTab, wfTab, dashTab, cacheTab, runnersTab)
+}
+
+// firstFailedStepName returns the name of the first failed step in a job, or "".
+func firstFailedStepName(job *model.Job) string {
+	if job == nil {
+		return ""
+	}
+	for _, s := range job.Steps {
+		if s.Conclusion == model.ConclusionFailure {
+			return s.Name
+		}
+	}
+	return ""
+}
+
+// findFailedStepLine searches log content for the line where a failed step starts.
+// GitHub job logs use "##[group]StepName" markers. Run-level logs use "=== stepfile ===" markers.
+// Returns 1-based line number, or 0 if not found.
+func findFailedStepLine(content, stepName string) int {
+	if stepName == "" {
+		return 0
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		// Per-job log format: "2024-... ##[group]Step Name"
+		if strings.Contains(line, "##[group]"+stepName) {
+			return i + 1
+		}
+		// Run-level cached format: "=== N_Step Name.txt ==="
+		if strings.Contains(line, "=== ") && strings.Contains(line, stepName) {
+			return i + 1
+		}
+	}
+	// Fallback: search for step name as a substring anywhere
+	for i, line := range lines {
+		if strings.Contains(line, stepName) {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // renderStepProgress renders a live step-by-step progress view for an in-progress job.

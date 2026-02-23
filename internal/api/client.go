@@ -31,6 +31,18 @@ func NewClient(owner, repo string) (*Client, error) {
 	return &Client{rest: rest, owner: owner, repo: repo}, nil
 }
 
+// CheckRepo verifies the repository exists and is accessible.
+func (c *Client) CheckRepo() error {
+	var result struct {
+		FullName string `json:"full_name"`
+	}
+	err := c.rest.Get(fmt.Sprintf("repos/%s/%s", c.owner, c.repo), &result)
+	if err != nil {
+		return fmt.Errorf("repository %s/%s not found or not accessible", c.owner, c.repo)
+	}
+	return nil
+}
+
 func (c *Client) repoPath(path string) string {
 	return fmt.Sprintf("repos/%s/%s/%s", c.owner, c.repo, path)
 }
