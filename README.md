@@ -97,8 +97,8 @@ gha-tui -R octocat/hello-world -cache-size 1000 -cache-ttl 48h
 
 ```
 +------------------+--------------------+
-| Runs / Jobs      | Job Details        |
-| (left pane)      | (middle pane)      |
+| Runs             | Job Details        |
+| (left pane)      | (right pane)       |
 +------------------+--------------------+
 ```
 
@@ -107,7 +107,7 @@ The focused pane has a purple border. Switch panes with `Tab` / `Shift+Tab`.
 Full-screen overlays open on top of the layout:
 - **Log View** — `Enter` on a job
 - **Run Info View** — `i` on a run (left pane)
-- **Job Info View** — `i` on a job (middle pane)
+- **Job Info View** — `i` on a job (right pane)
 - **Search View** — `/` from runs
 - **Filter Overlay** — `S` from runs
 
@@ -134,7 +134,7 @@ Full-screen overlays open on top of the layout:
 | `f` | Filter runs (client-side) |
 | `S` | Server-side filter (workflow, event, status, branch, actor) |
 | `r` | Refresh |
-| `i` | Run info overlay (left pane) / Job info overlay (middle pane) |
+| `i` | Run info overlay (left pane) / Job info overlay (right pane) |
 | `/` | Search across logs |
 | `Space` | Toggle select run |
 | `R` | Rerun all jobs |
@@ -238,7 +238,7 @@ Selecting a workflow with `Enter` switches to the Runs tab filtered to that work
 
 ## Job Details
 
-The middle pane shows jobs for the selected run. Jobs are automatically grouped:
+The right pane shows jobs for the selected run. Jobs are automatically grouped:
 
 - **Matrix jobs** — variants like `build (ubuntu, 18)` and `build (macos, 20)` group under `build`
 - **Reusable workflows** — jobs using reusable workflows (e.g., `deploy-ecs-service (common) / Deploy ECS-Service`) are nested hierarchically: top-level group → caller variant → called jobs
@@ -265,7 +265,7 @@ For in-progress runs, the view auto-refreshes every 3 seconds.
 
 ## Job Info View
 
-Press `i` on a job (middle pane) to open a full-screen overlay showing job details:
+Press `i` on a job (right pane) to open a full-screen overlay showing job details:
 
 - Job name, status, conclusion, runner name
 - Started/completed timestamps and duration (or elapsed time for running jobs)
