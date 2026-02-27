@@ -65,7 +65,7 @@ func StatusIcon(conclusion string) string {
 		return StyleMuted.Render("-")
 	case "in_progress":
 		return StyleInfo.Render("*")
-	case "queued":
+	case "queued", "waiting", "pending", "requested":
 		return StyleMuted.Render("o")
 	default:
 		return StyleMuted.Render("?")

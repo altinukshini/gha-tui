@@ -20,6 +20,8 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lipglos
 - **Enhanced metrics** — success/failure rates, duration percentiles, queue times, usage breakdowns by event/actor/branch, slowest workflows, job-level stats
 - **Cache management** — browse, filter, sort, and delete GitHub Actions caches
 - **Runners** — view self-hosted and org-shared runners with status, labels, and OS info
+- **Attempt cycling** — press `a` to switch between run attempts in the jobs pane or log view; logs for all attempts are fetched in parallel
+- **Scrollable help** — press `?` for a 2-column help overlay with keyboard scrolling
 - **Log caching** — disk-based cache with configurable TTL and size limits, metadata tracking
 - **Bulk operations** — delete multiple runs by workflow with parallel deletion (3 at a time)
 - **Context-aware footer** — key hints change based on focused pane/view with inline status icon legend
@@ -118,7 +120,7 @@ Full-screen overlays open on top of the layout:
 | Key | Action |
 |-----|--------|
 | `q` / `Ctrl+C` | Quit |
-| `?` | Toggle help |
+| `?` | Toggle help (scrollable, 2-column) |
 | `1` / `2` / `3` / `4` / `5` | Switch tab: Runs, Workflows, Metrics, Cache, Runners |
 | `Tab` / `Shift+Tab` | Next / previous pane |
 | `Esc` | Back / close overlay |
@@ -141,6 +143,7 @@ Full-screen overlays open on top of the layout:
 | `F` | Rerun failed jobs |
 | `C` | Cancel run |
 | `X` | Force cancel run |
+| `a` | Cycle attempt (multi-attempt runs) |
 | `d` | Delete run (or all selected) |
 | `h` / `l` / `←` / `→` | Previous / next page |
 
@@ -181,6 +184,7 @@ Full-screen overlays open on top of the layout:
 | `PgUp` / `PgDn` | Page scroll |
 | `/` | Search within log |
 | `n` / `N` | Next / previous match |
+| `a` | Cycle attempt (multi-attempt runs) |
 | `Esc` | Close log view |
 
 ### Info View
@@ -243,7 +247,18 @@ The right pane shows jobs for the selected run. Jobs are automatically grouped:
 - **Matrix jobs** — variants like `build (ubuntu, 18)` and `build (macos, 20)` group under `build`
 - **Reusable workflows** — jobs using reusable workflows (e.g., `deploy-ecs-service (common) / Deploy ECS-Service`) are nested hierarchically: top-level group → caller variant → called jobs
 
-Each group and sub-group shows an aggregate status icon (in-progress > failure > cancelled > queued > success). Each job shows: status icon, name, duration, and step count.
+Each group and sub-group shows an aggregate status icon (in-progress > failure > cancelled > queued > success). Each job shows: status icon, name, duration, step count, and attempt indicator (`[att:N]` for multi-attempt runs).
+
+### Attempt Cycling
+
+For runs with multiple attempts (e.g., after "rerun failed jobs"), press `a` in the jobs pane or log view to cycle through:
+
+- **Latest** (default) — merged view showing all jobs with their most recent logs across all attempts
+- **Attempt 1** — only jobs and logs from attempt 1
+- **Attempt 2** — only jobs and logs from attempt 2
+- ...and so on back to "latest"
+
+The header shows the current view mode (e.g., `viewing: attempt 1 of 3`). Jobs that didn't run in the selected attempt show a clear message instead of logs. Logs for all attempts are fetched in parallel for faster loading.
 
 ### Live Step Progress
 

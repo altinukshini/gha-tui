@@ -140,6 +140,10 @@ type Model struct {
 	loading  bool
 	ready    bool
 	err      error
+
+	// Attempt cycling: 0 = latest/merged (default), 1+ = specific attempt
+	viewingAttempt int
+	maxAttempt     int
 }
 
 func New() Model {
@@ -150,6 +154,24 @@ func (m *Model) SetRun(run *model.Run) {
 	m.run = run
 	m.loading = true
 	m.cursor = 0
+	m.viewingAttempt = 0
+	if run != nil {
+		m.maxAttempt = run.RunAttempt
+	} else {
+		m.maxAttempt = 0
+	}
+}
+
+func (m *Model) SetAttempt(viewing, max int) {
+	m.viewingAttempt = viewing
+	m.maxAttempt = max
+	if m.ready {
+		m.viewport.SetContent(m.renderJobs())
+	}
+}
+
+func (m Model) ViewingAttempt() int {
+	return m.viewingAttempt
 }
 
 func (m Model) Run() *model.Run {
@@ -321,8 +343,11 @@ func (m Model) renderJobs() string {
 						cursor = "> "
 					}
 					icon := ui.StatusIcon(string(j.Conclusion))
-					if j.Status == model.RunStatusInProgress {
+					switch j.Status {
+					case model.RunStatusInProgress:
 						icon = ui.StatusIcon("in_progress")
+					case model.RunStatusQueued, model.RunStatusWaiting, model.RunStatusPending, model.RunStatusRequested:
+						icon = ui.StatusIcon("queued")
 					}
 					dur := j.Duration().Truncate(time.Second)
 
@@ -332,13 +357,18 @@ func (m Model) renderJobs() string {
 						name = strings.TrimSpace(parts[2])
 					}
 
+					attemptTag := ""
+					if m.run != nil && m.run.RunAttempt > 1 {
+						attemptTag = muted.Render(fmt.Sprintf(" [att:%d]", j.RunAttempt))
+					}
+
 					indent := "    "
 					if hasMultipleCallers {
 						indent = "      "
 					}
 
-					line := fmt.Sprintf("%s%s%s %s  %s  %d steps",
-						cursor, indent, icon, name, dur, len(j.Steps))
+					line := fmt.Sprintf("%s%s%s %s  %s  %d steps%s",
+						cursor, indent, icon, name, dur, len(j.Steps), attemptTag)
 
 					if idx == m.cursor {
 						line = highlight.Render(line)
@@ -362,8 +392,11 @@ func (m Model) renderJobs() string {
 					cursor = "> "
 				}
 				icon := ui.StatusIcon(string(j.Conclusion))
-				if j.Status == model.RunStatusInProgress {
+				switch j.Status {
+				case model.RunStatusInProgress:
 					icon = ui.StatusIcon("in_progress")
+				case model.RunStatusQueued, model.RunStatusWaiting, model.RunStatusPending, model.RunStatusRequested:
+					icon = ui.StatusIcon("queued")
 				}
 				dur := j.Duration().Truncate(time.Second)
 
@@ -372,8 +405,13 @@ func (m Model) renderJobs() string {
 					name = "  " + name
 				}
 
-				line := fmt.Sprintf("%s%s %s  %s  %d steps",
-					cursor, icon, name, dur, len(j.Steps))
+				attemptTag := ""
+				if m.run != nil && m.run.RunAttempt > 1 {
+					attemptTag = muted.Render(fmt.Sprintf(" [att:%d]", j.RunAttempt))
+				}
+
+				line := fmt.Sprintf("%s%s %s  %s  %d steps%s",
+					cursor, icon, name, dur, len(j.Steps), attemptTag)
 
 				if idx == m.cursor {
 					line = highlight.Render(line)
@@ -397,12 +435,19 @@ func (m Model) View() string {
 		return "\n  Select a run"
 	}
 
-	header := fmt.Sprintf(" %s | %s | %s | attempt %d",
-		m.run.DisplayTitle,
-		m.run.HeadBranch,
-		m.run.Event,
-		m.run.RunAttempt,
-	)
+	var header string
+	if m.maxAttempt > 1 {
+		if m.viewingAttempt == 0 {
+			header = fmt.Sprintf(" %s | %s | %s | viewing: latest (of %d attempts)",
+				m.run.DisplayTitle, m.run.HeadBranch, m.run.Event, m.maxAttempt)
+		} else {
+			header = fmt.Sprintf(" %s | %s | %s | viewing: attempt %d of %d",
+				m.run.DisplayTitle, m.run.HeadBranch, m.run.Event, m.viewingAttempt, m.maxAttempt)
+		}
+	} else {
+		header = fmt.Sprintf(" %s | %s | %s",
+			m.run.DisplayTitle, m.run.HeadBranch, m.run.Event)
+	}
 
 	return lipgloss.NewStyle().Bold(true).Render(header) + "\n" + m.viewport.View()
 }

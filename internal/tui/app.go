@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -102,8 +103,14 @@ type App struct {
 	// Track the currently viewed job for failed-step jump
 	viewingJob *model.Job
 
-	showHelp           bool
-	logFullScreen      bool
+	// Attempt cycling: 0 = latest/merged, 1+ = specific attempt
+	viewingAttempt int
+
+	showHelp     bool
+	helpViewport viewport.Model
+	helpReady    bool
+
+	logFullScreen bool
 	infoFullScreen     bool
 	infoStartedRefresh bool
 	cameFromSearch     bool
@@ -237,29 +244,44 @@ func (a App) fetchJobs(runID int64) tea.Cmd {
 	}
 }
 
-func (a App) fetchLogs(run *model.Run) tea.Cmd {
+func (a App) fetchJobsForAttempt(runID int64, attempt int) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := a.client.ListJobsForAttempt(runID, attempt, api.JobsFilter{PerPage: 100})
+		if err != nil {
+			return ui.JobsLoadedMsg{RunID: runID, Err: err}
+		}
+		return ui.JobsLoadedMsg{RunID: runID, Jobs: resp.Jobs}
+	}
+}
+
+func (a App) fetchLogsForAttempt(run *model.Run, attempt int) tea.Cmd {
 	return func() tea.Msg {
 		runID := run.ID
-		attempt := run.RunAttempt
+		// Check cache first
 		if a.logCache.HasRun(runID, attempt) {
-			logs, err := a.logCache.GetAllJobLogs(runID, attempt)
-			if err == nil && len(logs) > 0 {
+			if logs, err := a.logCache.GetAllJobLogs(runID, attempt); err == nil && len(logs) > 0 {
 				return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Logs: logs}
 			}
 		}
 
-		body, err := a.client.DownloadRunLogs(context.Background(), runID)
+		// Download from API
+		var body io.ReadCloser
+		var err error
+		if attempt == run.RunAttempt {
+			body, err = a.client.DownloadRunLogs(context.Background(), runID)
+		} else {
+			body, err = a.client.DownloadRunAttemptLogs(context.Background(), runID, attempt)
+		}
 		if err != nil {
 			return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Err: err}
 		}
-		defer body.Close()
 
-		_, err = a.logCache.StoreRunLogs(runID, attempt, body)
-		if err != nil {
-			return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Err: err}
+		_, storeErr := a.logCache.StoreRunLogs(runID, attempt, body)
+		body.Close()
+		if storeErr != nil {
+			return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Err: storeErr}
 		}
 
-		// Write cache metadata
 		a.logCache.WriteMeta(runID, attempt, cache.CacheMeta{
 			RunID:        runID,
 			Attempt:      attempt,
@@ -273,7 +295,115 @@ func (a App) fetchLogs(run *model.Run) tea.Cmd {
 		})
 
 		logs, err := a.logCache.GetAllJobLogs(runID, attempt)
-		return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Logs: logs, Err: err}
+		if err != nil {
+			return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Err: err}
+		}
+		return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Logs: logs}
+	}
+}
+
+func (a App) fetchLogs(run *model.Run) tea.Cmd {
+	return func() tea.Msg {
+		runID := run.ID
+		attempt := run.RunAttempt
+
+		// For multi-attempt runs, download all attempts in parallel and merge.
+		// Later attempts only overwrite if the new content is longer, because
+		// GitHub includes stub entries (just system.txt) for jobs that didn't
+		// re-run in the later attempt — those stubs must not replace real logs.
+
+		type attemptResult struct {
+			att  int
+			logs map[string]string
+			err  error
+		}
+
+		results := make([]attemptResult, attempt)
+		var wg sync.WaitGroup
+
+		for att := 1; att <= attempt; att++ {
+			wg.Add(1)
+			go func(att int) {
+				defer wg.Done()
+				r := attemptResult{att: att}
+
+				// Check cache first
+				if a.logCache.HasRun(runID, att) {
+					if logs, err := a.logCache.GetAllJobLogs(runID, att); err == nil && len(logs) > 0 {
+						r.logs = logs
+						results[att-1] = r
+						return
+					}
+				}
+
+				// Download from API
+				var body io.ReadCloser
+				var err error
+				if att == attempt {
+					body, err = a.client.DownloadRunLogs(context.Background(), runID)
+				} else {
+					body, err = a.client.DownloadRunAttemptLogs(context.Background(), runID, att)
+				}
+				if err != nil {
+					r.err = err
+					results[att-1] = r
+					return
+				}
+
+				_, storeErr := a.logCache.StoreRunLogs(runID, att, body)
+				body.Close()
+				if storeErr != nil {
+					r.err = storeErr
+					results[att-1] = r
+					return
+				}
+
+				a.logCache.WriteMeta(runID, att, cache.CacheMeta{
+					RunID:        runID,
+					Attempt:      att,
+					WorkflowName: run.Name,
+					DisplayTitle: run.DisplayTitle,
+					Branch:       run.HeadBranch,
+					Actor:        run.Actor.Login,
+					Event:        run.Event,
+					CreatedAt:    run.CreatedAt,
+					StoredAt:     time.Now(),
+				})
+
+				if logs, err := a.logCache.GetAllJobLogs(runID, att); err == nil {
+					r.logs = logs
+				}
+				results[att-1] = r
+			}(att)
+		}
+		wg.Wait()
+
+		// Merge in order (attempt 1, 2, ...) — longer content wins
+		merged := make(map[string]string)
+		var lastErr error
+		for _, r := range results {
+			if r.err != nil {
+				// Earlier attempts may have been cleaned up; only fail on latest
+				if r.att == attempt {
+					lastErr = r.err
+				}
+				continue
+			}
+			for k, v := range r.logs {
+				if existing, ok := merged[k]; !ok || len(v) > len(existing) {
+					merged[k] = v
+				}
+			}
+		}
+
+		if len(merged) == 0 {
+			err := lastErr
+			if err == nil {
+				err = fmt.Errorf("no logs available")
+			}
+			return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Err: err}
+		}
+		return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Logs: merged}
 	}
 }
 
@@ -794,8 +924,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.searchView.IsInputMode() {
 				// Input mode: dispatch search
 				query := a.searchView.Query()
-				if query != "" && a.currentRunLogs != nil {
-					cmds = append(cmds, a.executeSearch(query))
+				if query != "" {
+					if len(a.currentRunLogs) > 0 {
+						cmds = append(cmds, a.executeSearch(query))
+					} else {
+						a.status = "No logs available yet (jobs may still be running)"
+					}
 				}
 			} else {
 				// Results mode: jump to the selected match's log
@@ -860,12 +994,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		a.propagateSize()
+		if a.helpReady {
+			contentH := a.height - 5
+			if contentH < 1 {
+				contentH = 1
+			}
+			a.helpViewport.Width = a.width - 4
+			a.helpViewport.Height = contentH - 2 // reserve header line + border
+			a.helpViewport.SetContent(a.renderHelp())
+		}
 
 	case tea.KeyMsg:
-		// Help overlay dismisses on any key
+		// Help overlay: scroll keys pass to viewport, close keys dismiss
 		if a.showHelp {
-			a.showHelp = false
-			return &a, nil
+			switch msg.String() {
+			case "esc", "?", "q":
+				a.showHelp = false
+				return &a, nil
+			default:
+				var cmd tea.Cmd
+				a.helpViewport, cmd = a.helpViewport.Update(msg)
+				return &a, cmd
+			}
 		}
 
 		switch msg.String() {
@@ -873,6 +1023,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return &a, tea.Quit
 
 		case "?":
+			contentH := a.height - 5
+			if contentH < 1 {
+				contentH = 1
+			}
+			vpH := contentH - 2 // reserve header line + border
+			if vpH < 1 {
+				vpH = 1
+			}
+			if !a.helpReady {
+				a.helpViewport = viewport.New(a.width-4, vpH)
+				a.helpReady = true
+			} else {
+				a.helpViewport.Width = a.width - 4
+				a.helpViewport.Height = vpH
+			}
+			a.helpViewport.SetContent(a.renderHelp())
+			a.helpViewport.GotoTop()
 			a.showHelp = true
 			return &a, nil
 
@@ -955,18 +1122,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.currentView == ViewRuns && a.focusedPane == PaneLeft {
 				if !a.runsView.IsFiltering() {
 					if run := a.runsView.SelectedRun(); run != nil {
+						a.viewingAttempt = 0
 						a.detailsView.SetRun(run)
 						a.focusedPane = PaneMiddle
 						a.status = fmt.Sprintf("Loading jobs for #%d...", run.RunNumber)
 						cmds = append(cmds, a.fetchJobs(run.ID))
-						// Only download run-level log archive for completed runs.
-						// For in-progress runs, individual job logs are fetched on demand.
+						// Download run-level log archive (contains logs for completed jobs).
+						// For in-progress runs, still-running job logs are fetched on demand.
+						cmds = append(cmds, a.fetchLogs(run))
 						if run.Status == model.RunStatusCompleted {
-							cmds = append(cmds, a.fetchLogs(run))
 							a.autoRefreshRunID = 0
 						} else {
 							a.autoRefreshRunID = run.ID
-							a.currentRunLogs = nil
 						}
 					}
 				}
@@ -987,17 +1154,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if a.currentView == ViewRuns && a.focusedPane == PaneMiddle {
 				if job := a.detailsView.SelectedJob(); job != nil {
-					content, ok := a.currentRunLogs[job.Name]
-					if !ok {
-						// Fallback: try partial match (zip dir names may differ)
-						for k, v := range a.currentRunLogs {
-							if strings.Contains(k, job.Name) || strings.Contains(job.Name, k) {
-								content = v
-								ok = true
-								break
-							}
-						}
-					}
+					content, ok := a.findJobLog(job.Name)
 					if job.Status != model.RunStatusCompleted {
 						// In-progress job: show step progress from what we have, start tailing
 						a.logView.SetContent(job.Name, renderStepProgress(job))
@@ -1143,6 +1300,45 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					)
 				}
 			}
+		case "a":
+			if a.currentView == ViewRuns && a.logFullScreen && !a.infoFullScreen {
+				// Attempt cycling while viewing a job log
+				if run := a.detailsView.Run(); run != nil && run.RunAttempt > 1 && a.viewingJob != nil {
+					a.viewingAttempt++
+					if a.viewingAttempt > run.RunAttempt {
+						a.viewingAttempt = 0
+					}
+					a.detailsView.SetAttempt(a.viewingAttempt, run.RunAttempt)
+
+					if a.viewingAttempt == 0 {
+						a.status = "Loading latest (merged) logs..."
+						cmds = append(cmds, a.fetchLogs(run))
+					} else {
+						a.status = fmt.Sprintf("Loading attempt %d logs...", a.viewingAttempt)
+						cmds = append(cmds, a.fetchLogsForAttempt(run, a.viewingAttempt))
+					}
+				}
+			} else if a.currentView == ViewRuns && a.focusedPane == PaneMiddle && !a.logFullScreen && !a.infoFullScreen {
+				// Attempt cycling in jobs pane
+				if run := a.detailsView.Run(); run != nil && run.RunAttempt > 1 {
+					a.viewingAttempt++
+					if a.viewingAttempt > run.RunAttempt {
+						a.viewingAttempt = 0
+					}
+					a.detailsView.SetAttempt(a.viewingAttempt, run.RunAttempt)
+
+					if a.viewingAttempt == 0 {
+						a.status = "Loading latest (merged) jobs..."
+						cmds = append(cmds, a.fetchJobs(run.ID))
+						cmds = append(cmds, a.fetchLogs(run))
+					} else {
+						a.status = fmt.Sprintf("Loading attempt %d...", a.viewingAttempt)
+						cmds = append(cmds, a.fetchJobsForAttempt(run.ID, a.viewingAttempt))
+						cmds = append(cmds, a.fetchLogsForAttempt(run, a.viewingAttempt))
+					}
+				}
+			}
+
 		case "i":
 			if a.currentView == ViewRuns && !a.logFullScreen && !a.infoFullScreen {
 				if a.focusedPane == PaneMiddle {
@@ -1386,6 +1582,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.currentRunLogs = msg.Logs
 			a.currentRunID = msg.RunID
 			a.status = fmt.Sprintf("Logs loaded (%d jobs)", len(msg.Logs))
+			// If viewing a job log, refresh with new attempt's content
+			if a.logFullScreen && a.viewingJob != nil && a.tailingJobID == 0 {
+				displayName := a.viewingJob.Name
+				if a.viewingAttempt > 0 {
+					displayName = fmt.Sprintf("%s (attempt %d)", a.viewingJob.Name, a.viewingAttempt)
+				}
+				if content, ok := a.findJobLog(a.viewingJob.Name); ok && !isSystemStub(content) {
+					a.logView.SetContent(displayName, content)
+				} else {
+					noLogMsg := "\n  No logs for this job in the selected attempt.\n"
+					if a.viewingAttempt > 0 {
+						noLogMsg = fmt.Sprintf("\n  This job did not run in attempt %d.\n  Press 'a' to switch attempts.\n", a.viewingAttempt)
+					}
+					a.logView.SetContent(displayName, noLogMsg)
+				}
+			}
 		} else {
 			a.status = fmt.Sprintf("Error loading logs: %v", msg.Err)
 		}
@@ -1738,7 +1950,19 @@ func (a App) View() string {
 	}
 
 	if a.showHelp {
-		content = a.renderHelp()
+		contentH := a.height - 5
+		if contentH < 1 {
+			contentH = 1
+		}
+		pct := a.helpViewport.ScrollPercent() * 100
+		header := lipgloss.NewStyle().Bold(true).
+			Foreground(lipgloss.Color("#F9FAFB")).
+			Render(fmt.Sprintf(" Help  %3.0f%%", pct))
+		hints := lipgloss.NewStyle().Foreground(ui.ColorMuted).
+			Render("  j/k:scroll  PgUp/PgDn:page  g/G:top/bot  esc:close")
+		helpContent := header + hints + "\n" + a.helpViewport.View()
+		style := ui.StylePaneFocused.Width(a.width - 2).Height(contentH)
+		content = style.Render(helpContent)
 	} else if a.confirmDialog.IsActive() {
 		content = a.confirmDialog.View()
 	} else if a.filterOverlay.IsActive() {
@@ -1793,7 +2017,59 @@ func (a App) renderTabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, runsTab, wfTab, dashTab, cacheTab, runnersTab)
 }
 
-// firstFailedStepName returns the name of the first failed step in a job, or "".
+// findJobLog looks up a job's log in currentRunLogs by exact name, then partial match.
+func (a App) findJobLog(name string) (string, bool) {
+	if content, ok := a.currentRunLogs[name]; ok {
+		return content, true
+	}
+	for k, v := range a.currentRunLogs {
+		if strings.Contains(k, name) || strings.Contains(name, k) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// isSystemStub returns true if log content is just a system.txt stub
+// (GitHub includes these for jobs that didn't re-run in a later attempt).
+func isSystemStub(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return true
+	}
+	// Subdirectory fallback format: only has "=== system.txt ===" section
+	if strings.HasPrefix(trimmed, "=== system.txt ===") {
+		// Check if there's any other === section (actual step logs)
+		rest := trimmed[len("=== system.txt ==="):]
+		return !strings.Contains(rest, "=== ")
+	}
+	// Short content without actual log lines (just runner metadata)
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 15 {
+		allSystem := true
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "=== ") {
+				continue
+			}
+			// System metadata lines contain evaluation info, runner info
+			if !strings.Contains(line, "Evaluating") &&
+				!strings.Contains(line, "Expanded:") &&
+				!strings.Contains(line, "Result:") &&
+				!strings.Contains(line, "Waiting for") &&
+				!strings.Contains(line, "Requested labels:") &&
+				!strings.Contains(line, "Job defined at:") &&
+				!strings.Contains(line, "Job is about to start") &&
+				!strings.Contains(line, "runner") {
+				allSystem = false
+				break
+			}
+		}
+		return allSystem
+	}
+	return false
+}
+
 func firstFailedStepName(job *model.Job) string {
 	if job == nil {
 		return ""
@@ -1869,16 +2145,23 @@ func renderStepProgress(job *model.Job) string {
 }
 
 func (a App) contextHints() string {
+	if a.showHelp {
+		return "j/k:scroll  PgUp/PgDn:page  g/G:top/bot  esc:close"
+	}
 	// Full-screen overlays take priority
 	if a.currentView == ViewRuns {
 		if a.logFullScreen {
 			if a.logView.IsSearching() {
 				return "enter:confirm  esc:cancel"
 			}
-			if a.tailingJobID > 0 {
-				return "[LIVE]  /:search  n/N:match  j/k:scroll  PgUp/PgDn:page  g/G:top/bot  esc:back"
+			attemptHint := ""
+			if run := a.detailsView.Run(); run != nil && run.RunAttempt > 1 {
+				attemptHint = "  a:attempt"
 			}
-			return "/:search  n/N:match  j/k:scroll  PgUp/PgDn:page  g/G:top/bot  esc:back"
+			if a.tailingJobID > 0 {
+				return "[LIVE]  /:search  n/N:match  j/k:scroll  PgUp/PgDn:page  g/G:top/bot" + attemptHint + "  esc:back"
+			}
+			return "/:search  n/N:match  j/k:scroll  PgUp/PgDn:page  g/G:top/bot" + attemptHint + "  esc:back"
 		}
 		if a.infoFullScreen {
 			return "j/k:scroll  PgUp/PgDn:page  esc:back"
@@ -1894,23 +2177,25 @@ func (a App) contextHints() string {
 		}
 		// Normal two-pane mode
 		if a.focusedPane == PaneLeft {
-			legend := fmt.Sprintf("%s=pass %s=fail %s=cancel %s=run %s=skip",
+			legend := fmt.Sprintf("%s=pass %s=fail %s=cancel %s=run %s=queue %s=skip",
 				ui.StatusIcon("success"),
 				ui.StatusIcon("failure"),
 				ui.StatusIcon("cancelled"),
 				ui.StatusIcon("in_progress"),
+				ui.StatusIcon("queued"),
 				ui.StatusIcon("skipped"),
 			)
 			return legend + "  |  S:filter  r:refresh  i:info  /:search  ?:help"
 		}
-		legend := fmt.Sprintf("%s=pass %s=fail %s=cancel %s=run %s=skip",
+		legend := fmt.Sprintf("%s=pass %s=fail %s=cancel %s=run %s=queue %s=skip",
 			ui.StatusIcon("success"),
 			ui.StatusIcon("failure"),
 			ui.StatusIcon("cancelled"),
 			ui.StatusIcon("in_progress"),
+			ui.StatusIcon("queued"),
 			ui.StatusIcon("skipped"),
 		)
-		return legend + "  |  enter:view log  i:info  j/k:navigate  tab:pane  ?:help  esc:back"
+		return legend + "  |  enter:view log  i:info  a:attempt  j/k:navigate  tab:pane  ?:help  esc:back"
 	}
 
 	switch a.currentView {
@@ -1974,73 +2259,80 @@ func (a App) renderRunsLayout() string {
 }
 
 func (a App) renderHelp() string {
-	contentH := a.height - 5
-	if contentH < 1 {
-		contentH = 1
-	}
-
 	bold := lipgloss.NewStyle().Bold(true)
-	key := lipgloss.NewStyle().Foreground(ui.ColorPrimary).Bold(true).Width(14)
+	keyStyle := lipgloss.NewStyle().Foreground(ui.ColorPrimary).Bold(true).Width(14)
 	desc := lipgloss.NewStyle().Foreground(lipgloss.Color("#D1D5DB"))
 
 	row := func(k, d string) string {
-		return "  " + key.Render(k) + desc.Render(d) + "\n"
+		return "  " + keyStyle.Render(k) + desc.Render(d) + "\n"
 	}
 
-	var b strings.Builder
-	b.WriteString("\n" + bold.Render("  Navigation") + "\n\n")
-	b.WriteString(row("1-5", "Switch tab: Runs, Workflows, Metrics, Cache, Runners"))
-	b.WriteString(row("tab", "Next pane"))
-	b.WriteString(row("shift+tab", "Previous pane"))
-	b.WriteString(row("esc / bksp", "Back / close log view"))
-	b.WriteString(row("j / k", "Move down / up"))
-	b.WriteString(row("enter", "Select item"))
-	b.WriteString(row("q", "Quit"))
+	// Left column: Navigation, Runs, Search & Filter, Log Viewer
+	var left strings.Builder
+	left.WriteString(bold.Render("  Navigation") + "\n\n")
+	left.WriteString(row("1-5", "Switch tab"))
+	left.WriteString(row("tab", "Next pane"))
+	left.WriteString(row("shift+tab", "Previous pane"))
+	left.WriteString(row("esc / bksp", "Back / close"))
+	left.WriteString(row("j / k", "Move down / up"))
+	left.WriteString(row("enter", "Select item"))
+	left.WriteString(row("q", "Quit"))
 
-	b.WriteString("\n" + bold.Render("  Runs") + "\n\n")
-	b.WriteString(row("S", "Server-side filter"))
-	b.WriteString(row("space", "Toggle select run"))
-	b.WriteString(row("d", "Delete run (or all selected)"))
-	b.WriteString(row("r", "Refresh"))
-	b.WriteString(row("R", "Rerun all jobs"))
-	b.WriteString(row("F", "Rerun failed jobs"))
-	b.WriteString(row("C", "Cancel run"))
-	b.WriteString(row("X", "Force cancel run"))
-	b.WriteString(row("i", "Run info"))
-	b.WriteString(row("<- / ->", "Previous / next page"))
-	b.WriteString(row("h / l", "Previous / next page"))
+	left.WriteString("\n" + bold.Render("  Runs") + "\n\n")
+	left.WriteString(row("S", "Server-side filter"))
+	left.WriteString(row("space", "Toggle select run"))
+	left.WriteString(row("d", "Delete run"))
+	left.WriteString(row("r", "Refresh"))
+	left.WriteString(row("R", "Rerun all jobs"))
+	left.WriteString(row("F", "Rerun failed jobs"))
+	left.WriteString(row("C / X", "Cancel / force cancel"))
+	left.WriteString(row("i", "Run / job info"))
+	left.WriteString(row("a", "Cycle attempt"))
+	left.WriteString(row("h / l", "Prev / next page"))
 
-	b.WriteString("\n" + bold.Render("  Search & Filter") + "\n\n")
-	b.WriteString(row("/", "Search logs"))
-	b.WriteString(row("f", "Filter list"))
+	left.WriteString("\n" + bold.Render("  Search & Filter") + "\n\n")
+	left.WriteString(row("/", "Search logs"))
+	left.WriteString(row("f", "Filter list"))
 
-	b.WriteString("\n" + bold.Render("  Log Viewer") + "\n\n")
-	b.WriteString(row("/", "Search in log"))
-	b.WriteString(row("n / N", "Next / previous match"))
-	b.WriteString(row("g / G", "Go to top / bottom"))
-	b.WriteString(row("PgUp/PgDn", "Page up / page down"))
-	b.WriteString(row("esc", "Exit log view"))
+	// Right column: Log Viewer, Jobs, Workflows, Metrics, Cache, Runners
+	var right strings.Builder
+	right.WriteString(bold.Render("  Log Viewer") + "\n\n")
+	right.WriteString(row("/", "Search in log"))
+	right.WriteString(row("n / N", "Next / prev match"))
+	right.WriteString(row("g / G", "Go to top / bottom"))
+	right.WriteString(row("PgUp/PgDn", "Page up / down"))
+	right.WriteString(row("a", "Cycle attempt"))
+	right.WriteString(row("esc", "Exit log view"))
 
-	b.WriteString("\n" + bold.Render("  Workflows") + "\n\n")
-	b.WriteString(row("enter", "View runs for workflow"))
-	b.WriteString(row("e", "Enable workflow"))
-	b.WriteString(row("D", "Disable workflow"))
-	b.WriteString(row("d / x", "Bulk delete all runs"))
+	right.WriteString("\n" + bold.Render("  Jobs") + "\n\n")
+	right.WriteString(row("enter", "View job log"))
+	right.WriteString(row("i", "Job info"))
+	right.WriteString(row("a", "Cycle attempt"))
 
-	b.WriteString("\n" + bold.Render("  Metrics") + "\n\n")
-	b.WriteString(row("[ / ]", "Cycle time window"))
+	right.WriteString("\n" + bold.Render("  Workflows") + "\n\n")
+	right.WriteString(row("enter", "View runs"))
+	right.WriteString(row("e / D", "Enable / disable"))
+	right.WriteString(row("d / x", "Bulk delete runs"))
 
-	b.WriteString("\n" + bold.Render("  Cache (Actions Caches)") + "\n\n")
-	b.WriteString(row("r", "Refresh caches"))
-	b.WriteString(row("s", "Cycle sort mode (last used / created / size)"))
-	b.WriteString(row("d", "Delete selected cache"))
-	b.WriteString(row("x", "Clear all caches"))
+	right.WriteString("\n" + bold.Render("  Metrics") + "\n\n")
+	right.WriteString(row("[ / ]", "Cycle time window"))
 
-	b.WriteString("\n" + bold.Render("  Runners") + "\n\n")
-	b.WriteString(row("r", "Refresh runners"))
+	right.WriteString("\n" + bold.Render("  Cache") + "\n\n")
+	right.WriteString(row("space", "Toggle select"))
+	right.WriteString(row("d", "Delete selected"))
+	right.WriteString(row("x", "Clear all"))
+	right.WriteString(row("s", "Cycle sort mode"))
+	right.WriteString(row("r", "Refresh"))
 
-	b.WriteString("\n" + lipgloss.NewStyle().Foreground(ui.ColorMuted).Render("  Press any key to close") + "\n")
+	right.WriteString("\n" + bold.Render("  Runners") + "\n\n")
+	right.WriteString(row("r", "Refresh"))
 
-	style := ui.StylePaneFocused.Width(a.width - 2).Height(contentH)
-	return style.Render(b.String())
+	colW := (a.width - 8) / 2
+	if colW < 20 {
+		colW = 20
+	}
+	leftCol := lipgloss.NewStyle().Width(colW).Render(left.String())
+	rightCol := lipgloss.NewStyle().Width(colW).Render(right.String())
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "  ", rightCol)
 }

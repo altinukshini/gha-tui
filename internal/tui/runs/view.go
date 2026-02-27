@@ -34,8 +34,11 @@ func (d runDelegate) Render(w io.Writer, m list.Model, index int, item list.Item
 	}
 
 	icon := ui.StatusIcon(string(ri.run.Conclusion))
-	if ri.run.Status == model.RunStatusInProgress {
+	switch ri.run.Status {
+	case model.RunStatusInProgress:
 		icon = ui.StatusIcon("in_progress")
+	case model.RunStatusQueued, model.RunStatusWaiting, model.RunStatusPending, model.RunStatusRequested:
+		icon = ui.StatusIcon("queued")
 	}
 
 	sel := *d.selected
