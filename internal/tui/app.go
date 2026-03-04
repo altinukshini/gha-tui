@@ -380,13 +380,8 @@ func (a App) fetchLogs(run *model.Run) tea.Cmd {
 
 		// Merge in order (attempt 1, 2, ...) — longer content wins
 		merged := make(map[string]string)
-		var lastErr error
 		for _, r := range results {
 			if r.err != nil {
-				// Earlier attempts may have been cleaned up; only fail on latest
-				if r.att == attempt {
-					lastErr = r.err
-				}
 				continue
 			}
 			for k, v := range r.logs {
@@ -396,13 +391,8 @@ func (a App) fetchLogs(run *model.Run) tea.Cmd {
 			}
 		}
 
-		if len(merged) == 0 {
-			err := lastErr
-			if err == nil {
-				err = fmt.Errorf("no logs available")
-			}
-			return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Err: err}
-		}
+		// Return whatever we have (possibly empty). Individual job logs
+		// can still be fetched on demand via the per-job API endpoint.
 		return ui.LogsLoadedMsg{RunID: runID, Attempt: attempt, Logs: merged}
 	}
 }
@@ -686,18 +676,18 @@ func (a App) checkJobStatus(jobID int64, jobName string) tea.Cmd {
 	}
 }
 
-func (a App) fetchJobLog(jobID int64, jobName string) tea.Cmd {
+func (a App) fetchJobLog(runID int64, jobID int64, jobName string) tea.Cmd {
 	return func() tea.Msg {
 		body, err := a.client.DownloadJobLog(context.Background(), jobID)
 		if err != nil {
-			return ui.JobLogLoadedMsg{JobID: jobID, JobName: jobName, Err: err}
+			return ui.JobLogLoadedMsg{RunID: runID, JobID: jobID, JobName: jobName, Err: err}
 		}
 		defer body.Close()
 		data, err := io.ReadAll(body)
 		if err != nil {
-			return ui.JobLogLoadedMsg{JobID: jobID, JobName: jobName, Err: err}
+			return ui.JobLogLoadedMsg{RunID: runID, JobID: jobID, JobName: jobName, Err: err}
 		}
-		return ui.JobLogLoadedMsg{JobID: jobID, JobName: jobName, Content: string(data)}
+		return ui.JobLogLoadedMsg{RunID: runID, JobID: jobID, JobName: jobName, Content: string(data)}
 	}
 }
 
@@ -920,46 +910,57 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.searchView, cmd = a.searchView.Update(msg)
 		cmds = append(cmds, cmd)
 
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "enter" {
-			if a.searchView.IsInputMode() {
-				// Input mode: dispatch search
-				query := a.searchView.Query()
-				if query != "" {
-					if len(a.currentRunLogs) > 0 {
-						cmds = append(cmds, a.executeSearch(query))
-					} else {
-						a.status = "No logs available yet (jobs may still be running)"
-					}
-				}
-			} else {
-				// Results mode: jump to the selected match's log
-				if match := a.searchView.SelectedMatch(); match != nil {
-					jobName := match.JobName
-					line := match.Line
-					content, ok := a.currentRunLogs[jobName]
-					if !ok {
-						// Fallback: partial match (zip dir names may differ)
-						for k, v := range a.currentRunLogs {
-							if strings.Contains(k, jobName) || strings.Contains(jobName, k) {
-								content = v
-								ok = true
-								break
-							}
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			if keyMsg.String() == "enter" {
+				if a.searchView.IsInputMode() {
+					// Input mode: dispatch search
+					query := a.searchView.Query()
+					if query != "" {
+						if len(a.currentRunLogs) > 0 {
+							cmds = append(cmds, a.executeSearch(query))
+						} else {
+							// Send empty results so searchView exits loading state
+							cmds = append(cmds, func() tea.Msg {
+								return ui.SearchDoneMsg{Results: &model.SearchResults{
+									Query:     model.SearchQuery{Pattern: query},
+									JobCounts: make(map[string]int),
+								}}
+							})
+							a.status = "No logs available yet (jobs may still be running)"
 						}
 					}
-					if ok {
-						a.searchView.Deactivate()
-						a.logView.SetContent(jobName, content)
-						a.logView.GotoLine(line)
-						a.logFullScreen = true
-						a.cameFromSearch = true
-						a.propagateSize()
+				} else {
+					// Results mode: jump to the selected match's log
+					if match := a.searchView.SelectedMatch(); match != nil {
+						jobName := match.JobName
+						line := match.Line
+						content, ok := a.currentRunLogs[jobName]
+						if !ok {
+							// Fallback: partial match (zip dir names may differ)
+							for k, v := range a.currentRunLogs {
+								if strings.Contains(k, jobName) || strings.Contains(jobName, k) {
+									content = v
+									ok = true
+									break
+								}
+							}
+						}
+						if ok {
+							a.searchView.Deactivate()
+							a.logView.SetContent(jobName, content)
+							a.logView.GotoLine(line)
+							a.logFullScreen = true
+							a.cameFromSearch = true
+							a.propagateSize()
+						}
 					}
 				}
 			}
+			// Key messages return early — search view captures all keyboard input
+			return &a, tea.Batch(cmds...)
 		}
-
-		return &a, tea.Batch(cmds...)
+		// Non-key messages (LogsLoadedMsg, JobsLoadedMsg, etc.) fall through
+		// to the main handler so data updates aren't swallowed.
 	}
 
 	// Handle full-screen log search mode: keys go directly to log view,
@@ -1049,12 +1050,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.focusedPane = PaneMiddle
 				} else {
 					a.focusedPane = PaneLeft
+					a.status = a.runsPageStatus()
 				}
 			}
 		case "shift+tab":
 			if a.currentView == ViewRuns && !a.logFullScreen {
 				if a.focusedPane == PaneMiddle {
 					a.focusedPane = PaneLeft
+					a.status = a.runsPageStatus()
 				} else {
 					a.focusedPane = PaneMiddle
 				}
@@ -1123,6 +1126,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !a.runsView.IsFiltering() {
 					if run := a.runsView.SelectedRun(); run != nil {
 						a.viewingAttempt = 0
+						a.currentRunLogs = nil
+						a.currentRunID = 0
 						a.detailsView.SetRun(run)
 						a.focusedPane = PaneMiddle
 						a.status = fmt.Sprintf("Loading jobs for #%d...", run.RunNumber)
@@ -1166,7 +1171,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						a.viewingJob = job
 						a.status = fmt.Sprintf("Watching %s...", job.Name)
 						cmds = append(cmds, a.checkJobStatus(job.ID, job.Name))
-					} else if ok {
+					} else if ok && !isSystemStub(content) {
 						a.logView.SetContent(job.Name, content)
 						a.logFullScreen = true
 						a.propagateSize()
@@ -1178,13 +1183,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					} else {
-						// Completed job, no cached log -- fetch via per-job API.
+						// Completed job, no cached log or only system stub -- fetch via per-job API.
 						a.logView.SetLoading()
 						a.logFullScreen = true
 						a.propagateSize()
 						a.viewingJob = job
 						a.status = fmt.Sprintf("Fetching log for %s...", job.Name)
-						cmds = append(cmds, a.fetchJobLog(job.ID, job.Name))
+						if run := a.detailsView.Run(); run != nil {
+							cmds = append(cmds, a.fetchJobLog(run.ID, job.ID, job.Name))
+						}
 					}
 
 					}
@@ -1468,6 +1475,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.infoFullScreen && a.infoView.Run() != nil && a.infoView.Run().ID == msg.RunID {
 				a.infoView.SetJobs(msg.Jobs)
 			}
+			// Auto-fetch logs for completed jobs that we don't have yet.
+			// This covers both initial load (when ZIP fails for in-progress runs)
+			// and incremental updates (when jobs finish during auto-refresh).
+			// Only fetch if this is still the run we're viewing.
+			if run := a.detailsView.Run(); run != nil && run.ID == msg.RunID {
+				for _, j := range msg.Jobs {
+					if j.Status == model.RunStatusCompleted {
+						if content, ok := a.findJobLog(j.Name); !ok || isSystemStub(content) {
+							cmds = append(cmds, a.fetchJobLog(msg.RunID, j.ID, j.Name))
+						}
+					}
+				}
+			}
 			// Auto-refresh: schedule next tick if any job is still running
 			if a.autoRefreshRunID == msg.RunID {
 				allDone := true
@@ -1481,8 +1501,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.autoRefreshRunID = 0
 					a.status = fmt.Sprintf("%d jobs — all completed", len(msg.Jobs))
 					// Run is done, now fetch the full log archive.
-					// We need the run to write cache metadata; find it from runsView.
+					// Invalidate stale cache — earlier download during in-progress
+					// may only contain system stubs for still-running jobs.
 					if run := a.runsView.RunByID(msg.RunID); run != nil {
+						for att := 1; att <= run.RunAttempt; att++ {
+							a.logCache.DeleteEntry(run.ID, att)
+						}
 						cmds = append(cmds, a.fetchLogs(run))
 					}
 				} else {
@@ -1491,6 +1515,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			a.status = fmt.Sprintf("Error loading jobs: %v", msg.Err)
+			// Keep auto-refresh alive on transient errors
+			if a.autoRefreshRunID == msg.RunID {
+				cmds = append(cmds, a.scheduleJobsRefresh(msg.RunID))
+			}
 		}
 
 	case ui.RunsTickMsg:
@@ -1510,7 +1538,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ui.JobsTickMsg:
 		if a.autoRefreshRunID == msg.RunID && a.currentView == ViewRuns {
-			cmds = append(cmds, a.fetchJobs(msg.RunID))
+			if a.viewingAttempt > 0 {
+				cmds = append(cmds, a.fetchJobsForAttempt(msg.RunID, a.viewingAttempt))
+			} else {
+				cmds = append(cmds, a.fetchJobs(msg.RunID))
+			}
 			if a.infoFullScreen {
 				cmds = append(cmds, a.fetchRun(msg.RunID))
 			}
@@ -1537,7 +1569,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.viewingJob = msg.Job
 				}
 				a.status = fmt.Sprintf("Job %s completed — loading logs...", msg.JobName)
-				cmds = append(cmds, a.fetchJobLog(msg.JobID, msg.JobName))
+				if run := a.detailsView.Run(); run != nil {
+					cmds = append(cmds, a.fetchJobLog(run.ID, msg.JobID, msg.JobName))
+				}
 			} else if msg.Job != nil {
 				// Still running — render step progress and schedule next tick
 				a.logView.UpdateContent(renderStepProgress(msg.Job))
@@ -1555,11 +1589,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ui.JobLogLoadedMsg:
 		if msg.Err == nil {
+			// Discard logs from a different run to prevent cross-run contamination.
+			currentRun := a.detailsView.Run()
+			if currentRun == nil || currentRun.ID != msg.RunID {
+				break
+			}
 			// Cache the individual job log
 			if a.currentRunLogs == nil {
 				a.currentRunLogs = make(map[string]string)
 			}
 			a.currentRunLogs[msg.JobName] = msg.Content
+			a.detailsView.SetAvailableLogs(a.currentRunLogs)
 			// If we're in full-screen log view waiting for this, show it
 			if a.logFullScreen {
 				a.logView.SetContent(msg.JobName, msg.Content)
@@ -1579,9 +1619,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ui.LogsLoadedMsg:
 		if msg.Err == nil {
-			a.currentRunLogs = msg.Logs
+			// Merge incoming logs with existing ones. Keep whichever version
+			// is longer to avoid overwriting real logs (fetched per-job) with
+			// system stubs from the zip archive.
+			if a.currentRunLogs == nil || a.currentRunID != msg.RunID {
+				a.currentRunLogs = make(map[string]string)
+			}
 			a.currentRunID = msg.RunID
-			a.status = fmt.Sprintf("Logs loaded (%d jobs)", len(msg.Logs))
+			for k, v := range msg.Logs {
+				if existing, ok := a.currentRunLogs[k]; !ok || len(v) > len(existing) {
+					a.currentRunLogs[k] = v
+				}
+			}
+			a.detailsView.SetAvailableLogs(a.currentRunLogs)
+			if len(a.currentRunLogs) > 0 {
+				a.status = fmt.Sprintf("Logs loaded (%d jobs)", len(a.currentRunLogs))
+			} else {
+				a.status = "Logs not yet available"
+			}
 			// If viewing a job log, refresh with new attempt's content
 			if a.logFullScreen && a.viewingJob != nil && a.tailingJobID == 0 {
 				displayName := a.viewingJob.Name
@@ -2185,7 +2240,7 @@ func (a App) contextHints() string {
 				ui.StatusIcon("queued"),
 				ui.StatusIcon("skipped"),
 			)
-			return legend + "  |  S:filter  r:refresh  i:info  /:search  ?:help"
+			return legend + "  |  h/l:page  S:filter  r:refresh  i:info  /:search  ?:help"
 		}
 		legend := fmt.Sprintf("%s=pass %s=fail %s=cancel %s=run %s=queue %s=skip",
 			ui.StatusIcon("success"),

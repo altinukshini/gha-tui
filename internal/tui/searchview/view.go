@@ -47,6 +47,7 @@ func New() Model {
 func (m *Model) Activate() {
 	m.active = true
 	m.mode = ModeInput
+	m.loading = false
 	m.input.Focus()
 }
 

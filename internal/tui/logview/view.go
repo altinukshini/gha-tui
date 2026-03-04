@@ -19,16 +19,20 @@ type Model struct {
 	ready    bool
 	loading  bool
 
+	// Word wrap
+	wrap            bool
+	sourceToWrapped []int // maps source line index → first wrapped line index
+
 	// In-log search
-	searchInput   textinput.Model
-	searching     bool
-	searchQuery   string
-	matchLines    []int // 0-based line indices of matches
-	matchIndex    int   // current match position
-	matchTotal    int
+	searchInput textinput.Model
+	searching   bool
+	searchQuery string
+	matchLines  []int // 0-based line indices of matches (in source lines)
+	matchIndex  int   // current match position
+	matchTotal  int
 
 	// Jump highlight (from cross-log search result)
-	jumpLine int // 0-based line to highlight, -1 = none
+	jumpLine int // 0-based source line to highlight, -1 = none
 
 	// Live tailing for in-progress jobs
 	tailing bool
@@ -38,7 +42,7 @@ func New() Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search in log..."
 	ti.CharLimit = 256
-	return Model{searchInput: ti, jumpLine: -1}
+	return Model{searchInput: ti, jumpLine: -1, wrap: true}
 }
 
 func (m *Model) SetContent(jobName, content string) {
@@ -51,7 +55,7 @@ func (m *Model) SetContent(jobName, content string) {
 	m.matchTotal = 0
 	m.jumpLine = -1
 	if m.ready {
-		m.viewport.SetContent(content)
+		m.refreshViewport()
 		m.viewport.GotoTop()
 	}
 }
@@ -63,8 +67,8 @@ func (m *Model) SetLoading() {
 func (m *Model) GotoLine(line int) {
 	if line > 0 {
 		m.jumpLine = line - 1 // convert 1-based to 0-based
-		m.viewport.SetContent(m.applyHighlights())
-		m.viewport.SetYOffset(line - 1)
+		m.refreshViewport()
+		m.viewport.SetYOffset(m.wrappedLineFor(line - 1))
 	}
 }
 
@@ -80,7 +84,7 @@ func (m *Model) UpdateContent(content string) {
 	wasAtBottom := m.viewport.AtBottom()
 	prevOffset := m.viewport.YOffset
 
-	m.viewport.SetContent(m.applyHighlights())
+	m.refreshViewport()
 
 	if wasAtBottom {
 		m.viewport.GotoBottom()
@@ -123,10 +127,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				if query != "" {
 					m.searchQuery = query
 					m.findMatches()
-					m.viewport.SetContent(m.applyHighlights())
+					m.refreshViewport()
 					if len(m.matchLines) > 0 {
 						m.matchIndex = 0
-						m.viewport.SetYOffset(m.matchLines[0])
+						m.viewport.SetYOffset(m.wrappedLineFor(m.matchLines[0]))
 					}
 				}
 				m.searching = false
@@ -152,15 +156,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "n":
 			if len(m.matchLines) > 0 {
 				m.matchIndex = (m.matchIndex + 1) % len(m.matchLines)
-				m.viewport.SetContent(m.applyHighlights())
-				m.viewport.SetYOffset(m.matchLines[m.matchIndex])
+				m.refreshViewport()
+				m.viewport.SetYOffset(m.wrappedLineFor(m.matchLines[m.matchIndex]))
 			}
 			return m, nil
 		case "N":
 			if len(m.matchLines) > 0 {
 				m.matchIndex = (m.matchIndex - 1 + len(m.matchLines)) % len(m.matchLines)
-				m.viewport.SetContent(m.applyHighlights())
-				m.viewport.SetYOffset(m.matchLines[m.matchIndex])
+				m.refreshViewport()
+				m.viewport.SetYOffset(m.wrappedLineFor(m.matchLines[m.matchIndex]))
+			}
+			return m, nil
+		case "w":
+			m.wrap = !m.wrap
+			if m.content != "" {
+				m.refreshViewport()
 			}
 			return m, nil
 		case "g":
@@ -182,11 +192,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.viewport = viewport.New(msg.Width, msg.Height-headerH)
 			m.ready = true
 			if m.content != "" {
-				m.viewport.SetContent(m.applyHighlights())
+				m.refreshViewport()
 			}
 		} else {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height - headerH
+			if m.content != "" {
+				m.refreshViewport()
+			}
 		}
 	}
 
@@ -211,39 +224,95 @@ func (m *Model) findMatches() {
 	m.matchTotal = len(m.matchLines)
 }
 
-// applyHighlights returns the content with matching lines and jump line highlighted.
-func (m Model) applyHighlights() string {
+// refreshViewport wraps content (if enabled), applies search/jump highlights,
+// and sets the result into the viewport. It also builds the source-to-wrapped
+// line mapping used for search navigation.
+func (m *Model) refreshViewport() {
+	if !m.ready || m.content == "" {
+		if m.ready {
+			m.viewport.SetContent("")
+		}
+		m.sourceToWrapped = nil
+		return
+	}
+
+	sourceLines := strings.Split(m.content, "\n")
+
+	// Build highlight lookup
 	hasSearch := m.searchQuery != "" && len(m.matchLines) > 0
 	hasJump := m.jumpLine >= 0
-
-	if !hasSearch && !hasJump {
-		return m.content
-	}
 
 	matchSet := make(map[int]bool)
 	for _, idx := range m.matchLines {
 		matchSet[idx] = true
 	}
-
 	currentMatchLine := -1
 	if m.matchIndex >= 0 && m.matchIndex < len(m.matchLines) {
 		currentMatchLine = m.matchLines[m.matchIndex]
 	}
 
-	highlight := lipgloss.NewStyle().Background(lipgloss.Color("#374151"))
-	current := lipgloss.NewStyle().Background(lipgloss.Color("#92400E")).Bold(true)
+	highlightStyle := lipgloss.NewStyle().Background(lipgloss.Color("#374151"))
+	currentStyle := lipgloss.NewStyle().Background(lipgloss.Color("#92400E")).Bold(true)
 
-	lines := strings.Split(m.content, "\n")
-	for i, line := range lines {
-		if i == currentMatchLine {
-			lines[i] = current.Render(line)
-		} else if hasJump && i == m.jumpLine {
-			lines[i] = current.Render(line)
-		} else if matchSet[i] {
-			lines[i] = highlight.Render(line)
+	wrapWidth := m.width
+	doWrap := m.wrap && wrapWidth > 0
+
+	m.sourceToWrapped = make([]int, len(sourceLines))
+	var wrappedLines []string
+
+	for i, line := range sourceLines {
+		m.sourceToWrapped[i] = len(wrappedLines)
+
+		// Wrap the raw line first (before adding ANSI codes)
+		var segments []string
+		if doWrap {
+			segments = wrapLine(line, wrapWidth)
+		} else {
+			segments = []string{line}
 		}
+
+		// Apply highlight to all segments of this source line
+		if hasSearch || hasJump {
+			if i == currentMatchLine || (hasJump && i == m.jumpLine) {
+				for j := range segments {
+					segments[j] = currentStyle.Render(segments[j])
+				}
+			} else if matchSet[i] {
+				for j := range segments {
+					segments[j] = highlightStyle.Render(segments[j])
+				}
+			}
+		}
+
+		wrappedLines = append(wrappedLines, segments...)
 	}
-	return strings.Join(lines, "\n")
+
+	m.viewport.SetContent(strings.Join(wrappedLines, "\n"))
+}
+
+// wrappedLineFor translates a source line index to a viewport line index.
+func (m Model) wrappedLineFor(sourceLine int) int {
+	if m.sourceToWrapped == nil || sourceLine >= len(m.sourceToWrapped) {
+		return sourceLine
+	}
+	return m.sourceToWrapped[sourceLine]
+}
+
+// wrapLine hard-wraps a single line into segments of at most width runes.
+func wrapLine(line string, width int) []string {
+	runes := []rune(line)
+	if len(runes) <= width {
+		return []string{line}
+	}
+	var segments []string
+	for len(runes) > width {
+		segments = append(segments, string(runes[:width]))
+		runes = runes[width:]
+	}
+	if len(runes) > 0 {
+		segments = append(segments, string(runes))
+	}
+	return segments
 }
 
 func (m Model) View() string {
@@ -259,14 +328,18 @@ func (m Model) View() string {
 	if m.tailing {
 		liveTag = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#10B981")).Render(" [LIVE]")
 	}
-	headerParts := fmt.Sprintf(" %s%s  %3.f%%", m.jobName, liveTag, m.viewport.ScrollPercent()*100)
+	wrapTag := ""
+	if m.wrap {
+		wrapTag = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Render(" [wrap]")
+	}
+	headerParts := fmt.Sprintf(" %s%s%s  %3.f%%", m.jobName, liveTag, wrapTag, m.viewport.ScrollPercent()*100)
 	if m.searchQuery != "" && m.matchTotal > 0 {
 		headerParts += fmt.Sprintf("  [%d/%d matches]", m.matchIndex+1, m.matchTotal)
 	} else if m.searchQuery != "" {
 		headerParts += "  [no matches]"
 	}
 	hints := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Render(
-		"  /:search  n/N:match  j/k:line  PgUp/PgDn:page  g/G:top/bot  esc:back")
+		"  /:search  n/N:match  w:wrap  g/G:top/bot  esc:back")
 	header := lipgloss.NewStyle().Bold(true).
 		Foreground(lipgloss.Color("#F9FAFB")).
 		Render(headerParts) + hints

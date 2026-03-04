@@ -97,6 +97,7 @@ type JobTailStatusMsg struct {
 }
 
 type JobLogLoadedMsg struct {
+	RunID   int64
 	JobID   int64
 	JobName string
 	Content string

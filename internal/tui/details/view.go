@@ -144,6 +144,9 @@ type Model struct {
 	// Attempt cycling: 0 = latest/merged (default), 1+ = specific attempt
 	viewingAttempt int
 	maxAttempt     int
+
+	// Available logs keyed by job name — used to show log indicator
+	availableLogs map[string]string
 }
 
 func New() Model {
@@ -174,9 +177,68 @@ func (m Model) ViewingAttempt() int {
 	return m.viewingAttempt
 }
 
+// SetAvailableLogs updates the log availability map and re-renders.
+func (m *Model) SetAvailableLogs(logs map[string]string) {
+	m.availableLogs = logs
+	if m.ready {
+		m.viewport.SetContent(m.renderJobs())
+	}
+}
+
+// hasLog checks if real (non-stub) logs are available for a job name.
+func (m Model) hasLog(name string) bool {
+	if m.availableLogs == nil {
+		return false
+	}
+	if content, ok := m.availableLogs[name]; ok {
+		return content != "" && !isSystemStub(content)
+	}
+	// Partial match (zip names may differ from API names)
+	for k, v := range m.availableLogs {
+		if strings.Contains(k, name) || strings.Contains(name, k) {
+			return v != "" && !isSystemStub(v)
+		}
+	}
+	return false
+}
+
+// isSystemStub detects GitHub Actions system metadata stubs.
+func isSystemStub(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "=== system.txt ===") {
+		rest := trimmed[len("=== system.txt ==="):]
+		return !strings.Contains(rest, "=== ")
+	}
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 15 {
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "=== ") {
+				continue
+			}
+			if !strings.Contains(line, "Evaluating") &&
+				!strings.Contains(line, "Expanded:") &&
+				!strings.Contains(line, "Result:") &&
+				!strings.Contains(line, "Waiting for") &&
+				!strings.Contains(line, "Requested labels:") &&
+				!strings.Contains(line, "Job defined at:") &&
+				!strings.Contains(line, "Job is about to start") &&
+				!strings.Contains(line, "runner") {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func (m Model) Run() *model.Run {
 	return m.run
 }
+
 
 func (m Model) SelectedJob() *model.Job {
 	flat := m.flatJobs()
@@ -217,7 +279,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m.jobs[i].Name < m.jobs[j].Name
 		})
 		m.groups = groupJobs(m.jobs)
-		m.cursor = 0
+		// Preserve cursor position across refreshes; clamp if jobs list shrank
+		flat := m.flatJobs()
+		if m.cursor >= len(flat) {
+			if len(flat) > 0 {
+				m.cursor = len(flat) - 1
+			} else {
+				m.cursor = 0
+			}
+		}
 		if m.ready {
 			m.viewport.SetContent(m.renderJobs())
 		}
@@ -367,8 +437,13 @@ func (m Model) renderJobs() string {
 						indent = "      "
 					}
 
-					line := fmt.Sprintf("%s%s%s %s  %s  %d steps%s",
-						cursor, indent, icon, name, dur, len(j.Steps), attemptTag)
+					logTag := ""
+					if m.hasLog(j.Name) {
+						logTag = muted.Render(" [log]")
+					}
+
+					line := fmt.Sprintf("%s%s%s %s  %s  %d steps%s%s",
+						cursor, indent, icon, name, dur, len(j.Steps), attemptTag, logTag)
 
 					if idx == m.cursor {
 						line = highlight.Render(line)
@@ -410,8 +485,13 @@ func (m Model) renderJobs() string {
 					attemptTag = muted.Render(fmt.Sprintf(" [att:%d]", j.RunAttempt))
 				}
 
-				line := fmt.Sprintf("%s%s %s  %s  %d steps%s",
-					cursor, icon, name, dur, len(j.Steps), attemptTag)
+				logTag := ""
+				if m.hasLog(j.Name) {
+					logTag = muted.Render(" [log]")
+				}
+
+				line := fmt.Sprintf("%s%s %s  %s  %d steps%s%s",
+					cursor, icon, name, dur, len(j.Steps), attemptTag, logTag)
 
 				if idx == m.cursor {
 					line = highlight.Render(line)

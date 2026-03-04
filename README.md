@@ -15,6 +15,8 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lipglos
 - **Failed step jump** — opening a failed job's log automatically scrolls to the step that failed
 - **Run info view** — full metadata overlay with real-time refresh for in-progress runs
 - **Job info view** — per-job overlay with steps, durations, runner, and failed/running step highlights
+- **Word wrap** — log viewer wraps long lines to fit the terminal; toggle with `w`
+- **Log availability indicator** — jobs with downloaded logs show a `[log]` tag in the jobs pane
 - **Full-text log search** — regex support, case sensitivity, job filtering, context lines
 - **In-log search** — find patterns within a single job log with match navigation
 - **Enhanced metrics** — success/failure rates, duration percentiles, queue times, usage breakdowns by event/actor/branch, slowest workflows, job-level stats
@@ -184,6 +186,7 @@ Full-screen overlays open on top of the layout:
 | `PgUp` / `PgDn` | Page scroll |
 | `/` | Search within log |
 | `n` / `N` | Next / previous match |
+| `w` | Toggle word wrap |
 | `a` | Cycle attempt (multi-attempt runs) |
 | `Esc` | Close log view |
 
