@@ -1600,21 +1600,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.currentRunLogs[msg.JobName] = msg.Content
 			a.detailsView.SetAvailableLogs(a.currentRunLogs)
-			// If we're in full-screen log view waiting for this, show it
-			if a.logFullScreen {
+			// If we're in full-screen log view for THIS job, show it
+			if a.logFullScreen && a.viewingJob != nil && a.viewingJob.Name == msg.JobName {
 				a.logView.SetContent(msg.JobName, msg.Content)
 				// Jump to failed step if the job failed
-				if a.viewingJob != nil && a.viewingJob.Name == msg.JobName {
-					if stepName := firstFailedStepName(a.viewingJob); stepName != "" {
-						if line := findFailedStepLine(msg.Content, stepName); line > 0 {
-							a.logView.GotoLine(line)
-						}
+				if stepName := firstFailedStepName(a.viewingJob); stepName != "" {
+					if line := findFailedStepLine(msg.Content, stepName); line > 0 {
+						a.logView.GotoLine(line)
 					}
 				}
 			}
-			a.status = fmt.Sprintf("Log loaded for %s", msg.JobName)
+			// Only show status for the job being viewed or when on the jobs list
+			if !a.logFullScreen || (a.viewingJob != nil && a.viewingJob.Name == msg.JobName) {
+				a.status = fmt.Sprintf("Log loaded for %s", msg.JobName)
+			}
 		} else {
-			a.status = fmt.Sprintf("Error loading log: %v", msg.Err)
+			if !a.logFullScreen {
+				a.status = fmt.Sprintf("Error loading log: %v", msg.Err)
+			}
 		}
 
 	case ui.LogsLoadedMsg:
@@ -1637,19 +1640,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				a.status = "Logs not yet available"
 			}
-			// If viewing a job log, refresh with new attempt's content
-			if a.logFullScreen && a.viewingJob != nil && a.tailingJobID == 0 {
-				displayName := a.viewingJob.Name
-				if a.viewingAttempt > 0 {
-					displayName = fmt.Sprintf("%s (attempt %d)", a.viewingJob.Name, a.viewingAttempt)
-				}
+			// If viewing a job log after an attempt switch, refresh with the new attempt's content.
+			// Skip if we already have real content to avoid resetting search state.
+			if a.logFullScreen && a.viewingJob != nil && a.tailingJobID == 0 && msg.Attempt > 0 && a.viewingAttempt > 0 {
+				displayName := fmt.Sprintf("%s (attempt %d)", a.viewingJob.Name, a.viewingAttempt)
 				if content, ok := a.findJobLog(a.viewingJob.Name); ok && !isSystemStub(content) {
 					a.logView.SetContent(displayName, content)
 				} else {
-					noLogMsg := "\n  No logs for this job in the selected attempt.\n"
-					if a.viewingAttempt > 0 {
-						noLogMsg = fmt.Sprintf("\n  This job did not run in attempt %d.\n  Press 'a' to switch attempts.\n", a.viewingAttempt)
-					}
+					noLogMsg := fmt.Sprintf("\n  This job did not run in attempt %d.\n  Press 'a' to switch attempts.\n", a.viewingAttempt)
 					a.logView.SetContent(displayName, noLogMsg)
 				}
 			}
