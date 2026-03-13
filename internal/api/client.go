@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,7 +39,20 @@ func (c *Client) CheckRepo() error {
 	}
 	err := c.rest.Get(fmt.Sprintf("repos/%s/%s", c.owner, c.repo), &result)
 	if err != nil {
-		return fmt.Errorf("repository %s/%s not found or not accessible", c.owner, c.repo)
+		var httpErr *ghAPI.HTTPError
+		if errors.As(err, &httpErr) {
+			switch httpErr.StatusCode {
+			case 403:
+				return fmt.Errorf("access denied for %s/%s — API rate limit may be exceeded or token lacks permissions (run: gh auth status)", c.owner, c.repo)
+			case 404:
+				return fmt.Errorf("repository %s/%s not found — check the name or token permissions (run: gh auth status)", c.owner, c.repo)
+			case 401:
+				return fmt.Errorf("authentication failed — run: gh auth login")
+			default:
+				return fmt.Errorf("repository %s/%s: HTTP %d — %s", c.owner, c.repo, httpErr.StatusCode, httpErr.Message)
+			}
+		}
+		return fmt.Errorf("repository %s/%s not accessible: %w", c.owner, c.repo, err)
 	}
 	return nil
 }
