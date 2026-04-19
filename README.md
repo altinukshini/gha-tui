@@ -115,7 +115,13 @@ Full-screen overlays open on top of the layout:
 - **Search View** — `/` from runs
 - **Filter Overlay** — `S` from runs
 
+![Runs tab: workflow runs list, job matrix, and status legend](runs-screen.png)
+
 ## Key Bindings
+
+Press `?` anytime for a scrollable two-column cheat sheet (navigation, runs, logs, workflows, metrics, cache, runners).
+
+![Help overlay with keyboard shortcuts](help-screen.png)
 
 ### Global
 
@@ -294,6 +300,8 @@ Press `i` on a job (right pane) to open a full-screen overlay showing job detail
 - In-progress steps highlighted in blue with `← RUNNING` marker
 
 ## Search
+
+![Cross-log search: query, match counts per job, and log snippets with line numbers](search-example.png)
 
 ### Cross-Log Search (`/` from runs)
 
