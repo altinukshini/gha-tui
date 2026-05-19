@@ -9,7 +9,7 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lipglos
 - **5-tab layout** — Runs, Workflows, Metrics, Cache, Runners
 - **All runs at a glance** — runs from all workflows load immediately with server-side filtering
 - **Server-side filtering** — filter runs by workflow, event, status, branch, or actor
-- **Run management** — rerun, cancel, force-cancel, and delete workflow runs
+- **Run management** — rerun (all/failed/single-job), cancel, force-cancel, and delete workflow runs
 - **Job inspection** — matrix-aware job grouping with reusable workflow nesting, step counts, duration tracking
 - **Live step progress** — in-progress jobs show real-time step-by-step status with auto-loading logs on completion
 - **Failed step jump** — opening a failed job's log automatically scrolls to the step that failed
@@ -42,8 +42,8 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lipglos
 Grab the latest release from the [Releases](https://github.com/altinukshini/gha-tui/releases) page. Binaries are available for Linux, macOS, and Windows (amd64 and arm64).
 
 ```bash
-# Example: macOS arm64
-curl -sL https://github.com/altinukshini/gha-tui/releases/latest/download/gha-tui-v0.1.0-darwin-arm64.tar.gz | tar xz
+# Example: macOS arm64 (replace <version> with the tag, e.g. v1.0.9)
+curl -sL https://github.com/altinukshini/gha-tui/releases/latest/download/gha-tui-<version>-darwin-arm64.tar.gz | tar xz
 sudo mv gha-tui /usr/local/bin/
 ```
 
@@ -147,7 +147,7 @@ Press `?` anytime for a scrollable two-column cheat sheet (navigation, runs, log
 | `i` | Run info overlay (left pane) / Job info overlay (right pane) |
 | `/` | Search across logs |
 | `Space` | Toggle select run |
-| `R` | Rerun all jobs |
+| `R` | Rerun — all jobs (left pane focused) or just the selected job (right pane focused) |
 | `F` | Rerun failed jobs |
 | `C` | Cancel run |
 | `X` | Force cancel run |
@@ -237,11 +237,14 @@ All destructive operations show a confirmation dialog.
 
 | Operation | Key | Description |
 |-----------|-----|-------------|
-| Rerun all | `R` | Re-execute all jobs, creating a new attempt |
+| Rerun all | `R` (left pane) | Re-execute all jobs, creating a new attempt |
+| Rerun job | `R` (right pane) | Re-execute only the focused job |
 | Rerun failed | `F` | Re-execute only the failed jobs |
 | Cancel | `C` | Graceful cancel — stops after the current step |
 | Force cancel | `X` | Force terminate — use when regular cancel is stuck |
 | Delete | `d` | Permanently remove the run |
+
+`R` is context-aware: with the left (Runs) pane focused it reruns the entire workflow run; with the right (Jobs) pane focused it reruns just the highlighted job. `R` is ignored inside the log and info overlays to avoid accidental triggers.
 
 ## Workflows
 
