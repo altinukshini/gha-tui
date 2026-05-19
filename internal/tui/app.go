@@ -707,6 +707,13 @@ func (a App) doRerunFailed(runID int64) tea.Cmd {
 	}
 }
 
+func (a App) doRerunJob(jobID int64) tea.Cmd {
+	return func() tea.Msg {
+		err := a.client.RerunJob(jobID, false)
+		return ui.ActionResultMsg{Action: "Rerun job", Err: err}
+	}
+}
+
 func (a App) doDeleteRun(runID int64) tea.Cmd {
 	return func() tea.Msg {
 		err := a.client.DeleteRun(runID)
@@ -832,6 +839,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, a.doRerunAll(result.Data.(int64)))
 			case "rerun-failed":
 				cmds = append(cmds, a.doRerunFailed(result.Data.(int64)))
+			case "rerun-job":
+				cmds = append(cmds, a.doRerunJob(result.Data.(int64)))
 			case "delete-run":
 				cmds = append(cmds, a.doDeleteRun(result.Data.(int64)))
 			case "cancel-run":
@@ -1226,8 +1235,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "R":
-			if a.currentView == ViewRuns {
-				if run := a.runsView.SelectedRun(); run != nil {
+			if a.currentView == ViewRuns && !a.logFullScreen && !a.infoFullScreen {
+				if a.focusedPane == PaneMiddle {
+					if job := a.detailsView.SelectedJob(); job != nil {
+						a.confirmDialog = confirm.New(
+							"Rerun Job",
+							fmt.Sprintf("Rerun job '%s'?", job.Name),
+							"rerun-job", job.ID,
+						)
+					}
+				} else if run := a.runsView.SelectedRun(); run != nil {
 					a.confirmDialog = confirm.New(
 						"Rerun All Jobs",
 						fmt.Sprintf("Rerun all jobs for run #%d (%s)?", run.RunNumber, run.DisplayTitle),
@@ -2248,7 +2265,7 @@ func (a App) contextHints() string {
 			ui.StatusIcon("queued"),
 			ui.StatusIcon("skipped"),
 		)
-		return legend + "  |  enter:view log  i:info  a:attempt  j/k:navigate  tab:pane  ?:help  esc:back"
+		return legend + "  |  enter:view log  R:rerun  i:info  a:attempt  j/k:navigate  tab:pane  ?:help  esc:back"
 	}
 
 	switch a.currentView {
@@ -2359,6 +2376,7 @@ func (a App) renderHelp() string {
 
 	right.WriteString("\n" + bold.Render("  Jobs") + "\n\n")
 	right.WriteString(row("enter", "View job log"))
+	right.WriteString(row("R", "Rerun job"))
 	right.WriteString(row("i", "Job info"))
 	right.WriteString(row("a", "Cycle attempt"))
 
